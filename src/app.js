@@ -1709,6 +1709,10 @@ async function performResourceUpload(form, existing) {
     console.warn("[SketchVault Upload] icon extension warning", mainFile.name);
   }
 
+  if (!state.session?.access_token || !state.user?.id) {
+    throw new Error("You are not signed in. Please sign in and try again.");
+  }
+
   const controller = new AbortController();
   state.uploadAbort = controller;
 
@@ -1723,6 +1727,8 @@ async function performResourceUpload(form, existing) {
     { mainFile, iconFile, previewOne, previewTwo },
     existing,
     {
+      session: state.session,
+      user: state.user,
       signal: controller.signal,
       onProgress: ({ message, percent }) => {
         setUploadProgress({ active: true, message, percent, error: "" });

@@ -5,7 +5,7 @@ const ICON_BUCKET = "resource-icons";
 const PREVIEW_BUCKET = "resource-previews";
 const SUPABASE_CDN = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 const LOG_PREFIX = "[SketchVault Upload]";
-const SESSION_TIMEOUT_MS = 15000;
+const REFRESH_TIMEOUT_MS = 25000;
 const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 let clientPromise;
@@ -32,7 +32,7 @@ function logUploadError(stage, error) {
 async function withTimeout(promise, ms, label) {
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} — အချိန်ကုန်သွားပါသည် (${Math.round(ms / 1000)}s)`)), ms);
+    timer = setTimeout(() => reject(new Error(`${label} timed out (${Math.round(ms / 1000)}s).`)), ms);
   });
   try {
     return await Promise.race([promise, timeout]);
@@ -70,7 +70,7 @@ export async function getSupabase() {
 }
 
 export function readableError(error) {
-  if (!error) return "တစ်ခုခု မှားယွင်းသွားပါသည်။";
+  if (!error) return "Something went wrong.";
   if (error instanceof SupabaseSetupError) return error.message;
   if (error.message) return error.message;
   return String(error);
@@ -95,67 +95,113 @@ function encodeStoragePath(path) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
-/**
- * Mobile browsers တွင် getUser() ကြာမြင့်ပြီး upload ကို ရပ်တန့်စေနိုင်သည် —
- * local session ကို ဦးစွာသုံးပြီး refresh လုပ်သည်။
- */
-async function resolveAuthUser(client, onProgress) {
-  logUpload("session:start");
-  onProgress?.({ message: "စက်ရှင်စစ်ဆေးနေသည်...", percent: 5 });
-
-  const { data: sessionData, error: sessionError } = await withTimeout(
-    client.auth.getSession(),
-    SESSION_TIMEOUT_MS,
-    "စက်ရှင်ရယူရန်"
-  );
-
-  if (sessionError) {
-    logUploadError("session:error", sessionError);
-    throw sessionError;
-  }
-
-  const session = sessionData.session;
-  if (session?.user) {
-    logUpload("session:ok", { userId: session.user.id });
-    onProgress?.({ message: "အသုံးပြုသူ အတည်ပြုပြီး", percent: 10 });
-
-    const expiresAt = session.expires_at;
-    const needsRefresh = expiresAt && expiresAt * 1000 < Date.now() + 90_000;
-    if (needsRefresh) {
-      logUpload("session:refresh");
-      onProgress?.({ message: "စက်ရှင်ပြန်လသက်သွင်းနေသည်...", percent: 8 });
-      const { data: refreshed, error: refreshError } = await withTimeout(
-        client.auth.refreshSession(),
-        SESSION_TIMEOUT_MS,
-        "စက်ရှင်ပြန်လသက်သွင်းရန်"
-      );
-      if (refreshError) {
-        logUploadError("session:refresh-error", refreshError);
-        throw refreshError;
-      }
-      if (refreshed.session?.user) return refreshed.session.user;
-    }
-    return session.user;
-  }
-
-  logUpload("user:fallback-getUser");
-  onProgress?.({ message: "အကောင့်အချက်အလက် စစ်ဆေးနေသည်...", percent: 12 });
-  const { data: userData, error: userError } = await withTimeout(
-    client.auth.getUser(),
-    SESSION_TIMEOUT_MS,
-    "အသုံးပြုသူ အတည်ပြုရန်"
-  );
-  if (userError) {
-    logUploadError("user:error", userError);
-    throw userError;
-  }
-  if (!userData.user) throw new Error("အရင်ဆုံး အကောင့်ဝင်ပါ။");
-  logUpload("user:ok", { userId: userData.user.id });
-  return userData.user;
+function getAuthStorageKey() {
+  const ref = CONFIG.supabaseUrl.match(/https:\/\/([^.]+)\.supabase\.co/i)?.[1];
+  return ref ? `sb-${ref}-auth-token` : null;
 }
 
-async function currentUser(client, onProgress) {
-  return resolveAuthUser(client, onProgress);
+/** Network မခေါ်ဘဲ localStorage ထဲက session — upload အတွက် အဓိက။ */
+export function readPersistedSession() {
+  const key = getAuthStorageKey();
+  if (!key) return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed?.access_token && parsed?.user) return parsed;
+    if (parsed?.currentSession?.access_token) return parsed.currentSession;
+    return null;
+  } catch (error) {
+    logUploadError("session:localStorage-parse", error);
+    return null;
+  }
+}
+
+function sessionExpiresSoon(session, bufferMs = 120_000) {
+  const exp = session?.expires_at;
+  if (!exp) return false;
+  return exp * 1000 < Date.now() + bufferMs;
+}
+
+function buildAuthContext(injectedSession, injectedUser) {
+  const session =
+    injectedSession?.access_token ? injectedSession : readPersistedSession();
+  const user = injectedUser || session?.user;
+  if (!session?.access_token || !user?.id) return null;
+  return {
+    session,
+    user,
+    accessToken: session.access_token,
+    userId: user.id
+  };
+}
+
+async function syncClientSession(client, session) {
+  if (!session?.access_token) return;
+  try {
+    const { error } = await withTimeout(
+      client.auth.setSession({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token || ""
+      }),
+      8000,
+      "Session sync"
+    );
+    if (error) logUploadError("session:setSession", error);
+  } catch (error) {
+    logUploadError("session:setSession-skip", error);
+  }
+}
+
+async function prepareUploadAuth(client, options = {}) {
+  const { session, user, onProgress } = options;
+  onProgress?.({ message: "Checking session...", percent: 5 });
+
+  let auth = buildAuthContext(session, user);
+  if (!auth) {
+    throw new Error("Please sign in again. Your session was not found.");
+  }
+
+  logUpload("session:ready", { source: session?.access_token ? "app-state" : "localStorage", userId: auth.userId });
+
+  if (sessionExpiresSoon(auth.session)) {
+    onProgress?.({ message: "Refreshing session...", percent: 8 });
+    try {
+      await syncClientSession(client, auth.session);
+      const { data, error } = await withTimeout(
+        client.auth.refreshSession(),
+        REFRESH_TIMEOUT_MS,
+        "Session refresh"
+      );
+      if (error) throw error;
+      if (data.session?.access_token) {
+        auth = {
+          session: data.session,
+          user: data.session.user,
+          accessToken: data.session.access_token,
+          userId: data.session.user.id
+        };
+        logUpload("session:refreshed");
+      }
+    } catch (error) {
+      logUploadError("session:refresh-failed", error);
+      throw new Error("Session expired. Please sign out and sign in again.");
+    }
+  } else {
+    await syncClientSession(client, auth.session);
+  }
+
+  onProgress?.({ message: "Session ready", percent: 10 });
+  return auth;
+}
+
+async function currentUser(client) {
+  const auth = buildAuthContext();
+  if (auth?.user) return auth.user;
+  const { data, error } = await client.auth.getSession();
+  if (error) throw error;
+  if (!data.session?.user) throw new Error("Please sign in first.");
+  return data.session.user;
 }
 
 function xhrStorageUpload({ url, token, apiKey, file, onProgress, signal }) {
@@ -170,7 +216,7 @@ function xhrStorageUpload({ url, token, apiKey, file, onProgress, signal }) {
 
     const abort = () => {
       xhr.abort();
-      reject(new Error("တင်ခြင်းကို ပယ်ဖျက်လိုက်ပါသည်။"));
+      reject(new Error("Upload cancelled."));
     };
     if (signal) {
       if (signal.aborted) return abort();
@@ -189,7 +235,7 @@ function xhrStorageUpload({ url, token, apiKey, file, onProgress, signal }) {
         resolve();
         return;
       }
-      let message = `Storage တင်ခြင်း မအောင်မြင်ပါ (HTTP ${xhr.status})`;
+      let message = `Storage upload failed (HTTP ${xhr.status})`;
       try {
         const body = JSON.parse(xhr.responseText || "{}");
         if (body.message || body.error) message = body.message || body.error;
@@ -199,8 +245,8 @@ function xhrStorageUpload({ url, token, apiKey, file, onProgress, signal }) {
       reject(new Error(message));
     };
 
-    xhr.onerror = () => reject(new Error("ကွန်ရက်ချို့ယွင်းချက် — ဖိုင်တင်ခြင်း မအောင်မြင်ပါ။"));
-    xhr.ontimeout = () => reject(new Error("တင်ခြင်း အချိန်ကုန်သွားပါသည်။"));
+    xhr.onerror = () => reject(new Error("Network error during upload."));
+    xhr.ontimeout = () => reject(new Error("Upload timed out."));
     xhr.timeout = UPLOAD_TIMEOUT_MS;
 
     logUpload("xhr:send", { url, size: file.size, type: file.type });
@@ -208,47 +254,55 @@ function xhrStorageUpload({ url, token, apiKey, file, onProgress, signal }) {
   });
 }
 
-async function uploadStorageFile(bucket, userId, resourceType, file, onProgress, signal) {
+async function uploadStorageFile(bucket, userId, resourceType, file, auth, onProgress, signal) {
   if (!file) return "";
 
   logUpload("file:init", { bucket, name: file.name, size: file.size, type: file.type });
-  onProgress?.({ message: `ဖိုင်ပြင်ဆင်နေသည်: ${file.name}`, percent: 15 });
+  onProgress?.({ message: `Preparing: ${file.name}`, percent: 15 });
 
-  if (!file.size) throw new Error("ဖိုင်အရွယ်အစား သုညဖြစ်နေသည် — အခြားဖိုင်ရွေးပါ။");
-
-  const client = await getSupabase();
-  const user = await resolveAuthUser(client, onProgress);
-  if (user.id !== userId) userId = user.id;
-
-  const { data: sessionData } = await client.auth.getSession();
-  const token = sessionData.session?.access_token;
-  if (!token) throw new Error("လက်မှတ်မရှိပါ — ထပ်ဝင်ပြီး စမ်းကြည့်ပါ။");
+  if (!file.size) throw new Error("File is empty. Choose another file.");
 
   const extension = file.name.includes(".") ? file.name.split(".").pop() : "bin";
   const path = `${userId}/${resourceType}/${randomId()}-${slug(file.name || `upload.${extension}`)}`;
-  const url = `${CONFIG.supabaseUrl}/storage/v1/object/${bucket}/${encodeStoragePath(path)}`;
+  const client = await getSupabase();
 
-  onProgress?.({ message: "Supabase သိုလှောင်ရုံသို့ တင်နေသည်...", percent: 20 });
+  onProgress?.({ message: "Uploading to storage...", percent: 20 });
+
+  const { error: sdkError } = await client.storage.from(bucket).upload(path, file, {
+    cacheControl: "31536000",
+    upsert: false
+  });
+
+  if (!sdkError) {
+    logUpload("storage:sdk-success", { bucket, path });
+    onProgress?.({ message: "Storage upload complete", percent: 82 });
+    return path;
+  }
+
+  logUploadError("storage:sdk", sdkError);
+
+  const url = `${CONFIG.supabaseUrl}/storage/v1/object/${bucket}/${encodeStoragePath(path)}`;
+  logUpload("storage:xhr-fallback", { url });
 
   await withTimeout(
     xhrStorageUpload({
       url,
-      token,
+      token: auth.accessToken,
       apiKey: CONFIG.supabaseAnonKey,
       file,
       signal,
       onProgress: (pct) =>
         onProgress?.({
-          message: `တင်နေသည်: ${pct}%`,
+          message: `Uploading: ${pct}%`,
           percent: 20 + Math.round(pct * 0.6)
         })
     }),
     UPLOAD_TIMEOUT_MS,
-    "ဖိုင်တင်ခြင်း"
+    "File upload"
   );
 
-  logUpload("storage:success", { bucket, path });
-  onProgress?.({ message: "သိုလှောင်ရုံ တင်ခြင်း ပြီးပါပြီ", percent: 82 });
+  logUpload("storage:xhr-success", { bucket, path });
+  onProgress?.({ message: "Storage upload complete", percent: 82 });
   return path;
 }
 
@@ -265,7 +319,14 @@ export async function getCurrentContext() {
   }
 
   const client = await getSupabase();
-  const { data, error } = await client.auth.getSession();
+  const persisted = readPersistedSession();
+  if (persisted?.user) {
+    await syncClientSession(client, persisted);
+    const profile = await ensureProfile(persisted.user);
+    return { session: persisted, user: persisted.user, profile };
+  }
+
+  const { data, error } = await withTimeout(client.auth.getSession(), REFRESH_TIMEOUT_MS, "Session load");
   if (error) throw error;
   if (!data.session?.user) {
     return { session: null, user: null, profile: null };
@@ -447,12 +508,12 @@ export async function loadDashboardData() {
 }
 
 export async function saveResource(resourceType, values, files, existing = null, options = {}) {
-  const { onProgress, signal } = options;
+  const { onProgress, signal, session, user } = options;
   logUpload("saveResource:start", { resourceType, existing: Boolean(existing) });
-  onProgress?.({ message: "တင်ခြင်း စတင်နေသည်...", percent: 0 });
+  onProgress?.({ message: "Starting upload...", percent: 0 });
 
   const client = await getSupabase();
-  const user = await currentUser(client, onProgress);
+  const auth = await prepareUploadAuth(client, { session, user, onProgress });
   const payload = {
     resource_type: resourceType,
     file_name: values.fileName.trim(),
@@ -468,9 +529,10 @@ export async function saveResource(resourceType, values, files, existing = null,
     if (files.mainFile) {
       payload.file_path = await uploadStorageFile(
         RESOURCE_BUCKET,
-        user.id,
+        auth.userId,
         resourceType,
         files.mainFile,
+        auth,
         onProgress,
         signal
       );
@@ -480,9 +542,10 @@ export async function saveResource(resourceType, values, files, existing = null,
     if (files.iconFile) {
       payload.icon_path = await uploadStorageFile(
         ICON_BUCKET,
-        user.id,
+        auth.userId,
         resourceType,
         files.iconFile,
+        auth,
         onProgress,
         signal
       );
@@ -491,9 +554,10 @@ export async function saveResource(resourceType, values, files, existing = null,
     if (files.previewOne) {
       payload.preview_one_path = await uploadStorageFile(
         PREVIEW_BUCKET,
-        user.id,
+        auth.userId,
         resourceType,
         files.previewOne,
+        auth,
         onProgress,
         signal
       );
@@ -502,22 +566,23 @@ export async function saveResource(resourceType, values, files, existing = null,
     if (files.previewTwo) {
       payload.preview_two_path = await uploadStorageFile(
         PREVIEW_BUCKET,
-        user.id,
+        auth.userId,
         resourceType,
         files.previewTwo,
+        auth,
         onProgress,
         signal
       );
       cleanup.push([PREVIEW_BUCKET, payload.preview_two_path]);
     }
 
-    onProgress?.({ message: "ဒေတာဘေ့စ်သို့ သိမ်းဆည်းနေသည်...", percent: 88 });
+    onProgress?.({ message: "Saving record...", percent: 88 });
 
     const query = existing
       ? client.from("resource_items").update(payload).eq("id", existing.id).select("*").single()
       : client
           .from("resource_items")
-          .insert({ ...payload, owner_id: user.id, download_count: 0 })
+          .insert({ ...payload, owner_id: auth.userId, download_count: 0 })
           .select("*")
           .single();
 
@@ -537,7 +602,7 @@ export async function saveResource(resourceType, values, files, existing = null,
       ]);
     }
 
-    onProgress?.({ message: "တင်ခြင်း ပြီးပါပြီ!", percent: 100 });
+    onProgress?.({ message: "Upload complete!", percent: 100 });
     logUpload("saveResource:done", { id: data?.id });
     return data;
   } catch (error) {
