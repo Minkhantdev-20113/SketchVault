@@ -40,5 +40,5 @@ createServer((request, response) => {
   });
   createReadStream(filePath).pipe(response);
 }).listen(port, () => {
-  console.log(`Sketchware Pro Hub running at http://localhost:${port}`);
+  console.log(`SketchVault running at http://localhost:${port}`);
 });

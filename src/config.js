@@ -1,11 +1,11 @@
 export const CONFIG = {
-  appName: "Sketchware Pro Hub",
+  appName: "SketchVault",
   defaultDescription:
-    "A carefully curated Sketchware Pro resource with project files, source snippets, custom blocks, libraries, and icons for faster Android app building.",
-  supabaseUrl: "https://rpbdsbchbswofzjddxgx.supabase.co",
-  supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJwYmRzYmNoYnN3b2Z6amRkeGd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAxMTcwNDAsImV4cCI6MjA5NTY5MzA0MH0.GT4bTxmd1IViOGzVHb6q6Gj6p4f9qZqRivUjljjC3k4",
-  docsUrl: "https://minkhantdev-20113.github.io/Sketchware-Api-Maker/Docs.html",
-  toolsUrl: "https://minkhantdev-20113.github.io/Sketchware-Api-Maker/",
+    "A curated SketchVault resource for Sketchware Pro project files, Java snippets, custom blocks, libraries, and icons.",
+  supabaseUrl: "https://ubakvffdmpoxwlljbaqw.supabase.co",
+  supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InViYWt2ZmZkbXBveHdsbGpiYXF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NTYwODcsImV4cCI6MjA5NTUzMjA4N30.JdyDA4NCeWe_3TYUvAaPq7fz-syhznQhzsvQ3kalN7c",
+  docsUrl: "docs.html",
+  toolsUrl: "tools.html",
   downloads: {
     sketchwareStable: "https://example.com/downloads/sketchware-pro-stable.apk",
     sketchwareBeta: "https://example.com/downloads/sketchware-pro-beta.apk",

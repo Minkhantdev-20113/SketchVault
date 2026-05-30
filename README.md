@@ -1,117 +1,95 @@
-# Sketchware Pro Hub
+# SketchVault
 
-Mobile-first responsive SaaS web app for Sketchware Pro projects, Java source code, custom blocks, libraries, and icons. The app is plain HTML/CSS/JavaScript with a real Supabase auth/database/storage integration.
+Sketchware Pro ပရောဂျက်ဖိုင်များ၊ Java source code၊ custom blocks၊ libraries နှင့် icons များကို စီမံခန့်ခွဲရန် မိုဘိုင်းဦးစားပေး static web app။ HTML/CSS/JavaScript + Supabase (Auth / Database / Storage) သုံးထားပါသည်။
 
-## Run locally
+## ဒေသတွင်း run ရန်
 
 ```powershell
-& "C:\Users\Min Khant\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" server.mjs
+node server.mjs
 ```
 
-Open `http://localhost:4173`.
+ဖွင့်ရန် — `http://localhost:4173`
 
 ## Supabase Setup လမ်းညွှန်
 
-### 1. Project အသစ်ဖန်တီးပါ
+### ၁. Project အသစ်ဖန်တီးပါ
 
-1. [Supabase](https://supabase.com) မှာ project အသစ်ဖန်တီးပါ။
-2. Project Settings → API ကိုဖွင့်ပါ။
-3. `Project URL` နဲ့ `anon public key` ကိုကူးပါ။
-4. `src/config.js` ထဲက `supabaseUrl` နဲ့ `supabaseAnonKey` ကို သင့် project key တွေနဲ့အစားထိုးပါ။
+1. [Supabase](https://supabase.com) တွင် project အသစ်ဖန်တီးပါ။
+2. Project Settings → API → `Project URL` နှင့် `anon public key` ကို ကူးပါ။
+3. `src/config.js` ထဲက `supabaseUrl` / `supabaseAnonKey` ကို အစားထိုးပါ။
 
-`.env.example` ကို production hosting မှာ reference အနေနဲ့သုံးနိုင်ပါတယ်။ ဒီ static version က build step မလိုတဲ့အတွက် browser runtime မှာ `src/config.js` ကို တိုက်ရိုက်အသုံးပြုပါတယ်။
+ဤ static app သည် build step မလိုပါ — browser မှ `src/config.js` ကို တိုက်ရိုက်ဖတ်ပါသည်။ Production တွင် environment variable မသုံးပါက key များကို repo ထဲ မထည့်ပါနှင့်။
 
-### 2. Database schema ထည့်ပါ
+### ၂. Database schema
 
-1. Supabase Dashboard → SQL Editor ကိုဖွင့်ပါ။
-2. `supabase/schema.sql` ထဲက SQL အကုန်ကို copy လုပ်ပါ။
-3. SQL Editor မှာ paste လုပ်ပြီး Run နှိပ်ပါ။
+1. Supabase Dashboard → SQL Editor
+2. `supabase/schema.sql` အပြည့်အစုံကို paste လုပ်ပြီး Run
+3. **`java_codes.description`** ကော်လံ အသစ်ပါသည် — ယခင်က deploy လုပ်ထားပြီးသားဆိုရင် SQL Editor တွင် အောက်ပါကို တစ်ကြောင်း run ပါ —
+   ```sql
+   alter table public.java_codes add column if not exists description text;
+   ```
 
-ဒီ schema က table များ၊ trigger များ၊ RLS policies များ၊ storage buckets များကိုတစ်ခါတည်းဖန်တီးပေးပါသည်။
+### ၃. Authentication
 
-Tables:
+Authentication → Providers:
 
-- `profiles`
-- `resource_items`
-- `java_codes`
-- `favorites`
+1. **Email** — Enable (လိုပါက Confirm email ကို Off)
+2. **Google** — မသုံးတော့ပါ (SketchVault တွင် ဖယ်ထားပြီး)
+3. **GitHub** — Enable + OAuth Client ID/Secret
+4. URL Configuration → Site URL နှင့် Redirect URLs:
+   ```text
+   http://localhost:4173/
+   https://your-domain.com/
+   ```
 
-Storage buckets:
+စကားဝှက် ပြန်လည်သတ်မှတ်လင့်ခ်သည် `#/auth?mode=recovery` သို့ ပြန်လာပါသည်။
 
-- `resource-files`
-- `resource-icons`
-- `resource-previews`
+### ၄. Storage & RLS
 
-### 3. Authentication ပြင်ဆင်ပါ
+`schema.sql` က buckets (`resource-files`, `resource-icons`, `resource-previews`) နှင့် RLS policies များကို ဖန်တီးပေးပါသည်။ Upload path သည် `{auth.uid()}/...` အောက်တွင်သာ ခွင့်ပြုထားပါသည်။
 
-Supabase Dashboard → Authentication → Providers:
+Admin — `profiles.role = 'admin'`
 
-1. Email provider ကို Enable လုပ်ပါ။
-2. Email confirmation မလိုချင်ပါက Authentication → Providers → Email → Confirm email ကို Off လုပ်ပါ။
-3. Google provider ကို Enable လုပ်ပြီး Google OAuth Client ID/Secret ထည့်ပါ။
-4. GitHub provider ကို Enable လုပ်ပြီး GitHub OAuth Client ID/Secret ထည့်ပါ။
-5. Authentication → URL Configuration ထဲမှာ Site URL ကို သင့် app URL ထည့်ပါ။
-6. Redirect URLs ထဲမှာ local/dev URL နဲ့ production URL ထည့်ပါ။
+### ၅. ဘာသာစကား (App UI)
 
-Examples:
+- Default: **English**
+- **Appearance** page → **Language** → `English + Burmese` သည် UI တွင် မြန်မာလို label များကို English နှင့်အတူ ပြပါသည်။
+- Tutorial/README များကို မြန်မာလို ထားထားနိုင်ပါသည် — app UI နှင့် ခွဲထားပါသည်။
 
-```text
-http://localhost:4173
-http://localhost:4173/
-https://your-domain.com
-https://your-domain.com/
-```
+### ၆. အဓိက လုပ်ဆောင်ချက်များ
 
-### 4. Security / RLS
+- Email/Password + GitHub OAuth
+- စကားဝှက် ပြရန်/ဖျောက်ရန် ခလုတ်
+- အလင်း / အမှောင် / စနစ် theme (default: စနစ်)
+- Android မိုဘိုင်းအတွက် upload progress + XHR storage + session timeout ပြင်ဆင်ချက်
+- Dashboard stat cards၊ skeleton loaders၊ FAB
+- Project / Icon grid-list toggle
+- Java Prism syntax highlighting + ဖော်ပြချက်
+- ဒေါင်းလုဒ် progress နှင့် retry
 
-`schema.sql` က Row Level Security ကို Enable လုပ်ထားပြီး policy အောက်ပါအတိုင်းပါဝင်ပါတယ်။
+## Deployment — Vercel vs Cloudflare
 
-- Signed-in users အားလုံး resource/code တွေကို read လုပ်နိုင်သည်။
-- Upload လုပ်သူသာ သူ့ record ကို edit/delete လုပ်နိုင်သည်။
-- `profiles.role = 'admin'` ဖြစ်သူသည် resource/code အားလုံးကို manage လုပ်နိုင်သည်။
-- Favorites ကို ကိုယ်ပိုင် user row များအတွက်ပဲ read/insert/delete လုပ်နိုင်သည်။
-- Storage files ကို authenticated user များက signed URL ဖြင့် read လုပ်နိုင်သည်။
-- Storage upload path သည် `auth.uid()` folder အောက်မှာပဲ insert ခွင့်ရှိသည်။
+| | Vercel (Free) | Cloudflare Pages (Free) |
+|---|---|---|
+| Static hosting | ✓ | ✓ |
+| SPA rewrite | `vercel.json` ပါပြီး | `_redirects` သို့မဟုတ် Pages settings |
+| ကမ္ဘာလုံးဆိုင်ရာ CDN | ✓ | ✓ (အများအားဖြင့် မြန်သည်) |
+| Upload ပြဿနာ | **မဖြေရှင်း** — ဖိုင်သည် client → Supabase တိုက်ရိုက် | **မဖြေရှင်း** — တူညီသည် |
 
-Admin သတ်မှတ်ရန် user sign up ပြီးနောက် Supabase Table Editor → `profiles` ထဲမှာ user row ကိုရှာပြီး `role` ကို `admin` ပြောင်းပါ။
+**အကြံပြုချက်:** မိုဘိုင်း upload သည် Vercel/Cloudflare ကြားကွာခြားမှု မဟုတ်ပါ — Supabase Storage သို့ browser တိုက်ရိုက်တင်ပါသည်။ လက်ရှိ upload ပြဿနာကို `src/supabase.js` တွင် session/local XHR + progress UI ဖြင့် ပြင်ထားပါသည်။ ငွေကြေးမရှိပါက **Cloudflare Pages** သို့ ပြောင်းခြင်းသည် performance အတွက် ကောင်းနိုင်သော်လည်း upload bug အတွက် မဖြစ်မနေ မလိုပါ။
 
-### 5. App features
+ယခု repo တွင် `vercel.json` (SPA rewrite) ပါပြီးသားဖြစ်သည်။ Cloudflare သို့ ရွေ့မည်ဆိုပါက —
+1. GitHub repo ချိတ်ဆက်
+2. Build command: *(ဗလာ)*
+3. Output: root directory
+4. `_redirects` ဖိုင် — `/* /index.html 200`
 
-- Email/password sign in, sign up, password reset
-- Google and GitHub OAuth
-- Auto-generated username avatar
-- Mobile overlay sidebar with swipe open/close
-- Collapsible desktop sidebar
-- Light/dark mode with local persistence
-- Project upload with `.swb`/`.zip`, icon, two previews
-- Generic upload for custom blocks, libraries, and icons
-- Java source upload with syntax highlighted detail view
-- Search by filename/code name
-- Category, sort, and favorites filters
-- Grid/list toggle for project files
-- Owner/admin edit and delete controls
-- Private Supabase Storage downloads with progress and retry state
-- Toast notifications, skeleton loaders, responsive dialogs
+## မှတ်သားရန် ဖိုင်များ
 
-### 6. Deployment
-
-ဒီ app က static site ဖြစ်လို့ Netlify, Vercel, Cloudflare Pages, Supabase Hosting, Nginx, Apache စသည့် static hosting များမှာတင်နိုင်ပါတယ်။
-
-Production deploy မလုပ်မီ:
-
-1. `src/config.js` ထဲမှာ production Supabase URL/key ထည့်ပါ။
-2. Supabase Auth Redirect URLs ထဲမှာ production domain ထည့်ပါ။
-3. `docs.html` နှင့် `tools.html` ကို final content/URL များဖြင့်အစားထိုးပါ။
-4. Landing download links ကို `src/config.js` ထဲမှာ final URLs များဖြင့်ပြောင်းပါ။
-5. Supabase policies ကို သင့် sharing model အတိုင်း public/private read ပြင်လိုပါက SQL Editor မှာ policy update လုပ်ပါ။
-
-### 7. Important files
-
-- `index.html` - SPA entry
-- `src/app.js` - routing, UI behavior, forms, dashboard, modals
-- `src/supabase.js` - Supabase auth/database/storage service layer
-- `src/ui.js` - reusable UI helpers
-- `src/styles.css` - responsive design system and themes
-- `src/config.js` - app configuration and Supabase keys
-- `supabase/schema.sql` - database, buckets, RLS policies
-- `server.mjs` - local static server
+- `index.html` — entry + Prism.js
+- `src/app.js` — routing, UI, forms
+- `src/supabase.js` — auth, storage, upload pipeline
+- `src/ui.js` — helpers
+- `src/styles.css` — design system
+- `vercel.json` — SPA routing
+- `supabase/schema.sql` — DB + storage

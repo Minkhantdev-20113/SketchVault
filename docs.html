@@ -1,22 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="my">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sketchware Pro Hub Docs</title>
+    <title>SketchVault — စာရွက်စာတမ်း</title>
     <link rel="stylesheet" href="src/styles.css" />
   </head>
   <body class="static-page">
     <main class="static-shell">
-      <a class="text-link" href="index.html">Back to app</a>
+      <a class="text-link" href="index.html">← App သို့ ပြန်</a>
       <section class="static-panel">
-        <p class="eyebrow">Temporary Documentation</p>
-        <h1>Sketchware Pro Hub Docs</h1>
-        <p>
-          This page is ready to be replaced with full product documentation. The main app button is wired to
-          this file so navigation works today while the final docs content is prepared.
-        </p>
-        <a class="button primary" href="index.html#/auth">Get Started</a>
+        <p class="eyebrow">SketchVault စာရွက်စာတမ်း</p>
+        <h1>ဖိုင်တင်ခြင်း နှင့် Supabase</h1>
+        <ol>
+          <li><code>src/config.js</code> ထဲတွင် Supabase URL နှင့် anon key ထည့်ပါ။</li>
+          <li><code>supabase/schema.sql</code> ကို Supabase SQL Editor တွင် run လုပ်ပါ။</li>
+          <li>Authentication → GitHub (နှင့် Email) ကို Enable လုပ်ပါ — Google မလိုပါ။</li>
+          <li>Redirect URLs တွင် production domain နှင့် <code>#/auth</code> path ပါဝင်ရန် သေချာပါစေ။</li>
+          <li>ဖိုင်တင်ခြင်းသည် browser မှ Supabase Storage သို့ တိုက်ရိုက်ဖြစ်သည် — hosting (Vercel/Cloudflare) သည် static ဖိုင်များကိုသာ ပေးပါသည်။</li>
+          <li>Android တွင် တင်မရပါက app ထဲ upload status နှင့် browser console တွင် <code>[SketchVault Upload]</code> log များကို ကြည့်ပါ။</li>
+        </ol>
+        <a class="button primary" href="index.html#/auth">စတင်ရန်</a>
       </section>
     </main>
   </body>

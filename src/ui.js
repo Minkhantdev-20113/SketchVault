@@ -1,4 +1,5 @@
 import { CONFIG } from "./config.js";
+import { t } from "./i18n.js";
 import { icon } from "./icons.js";
 
 export const resourcePages = {
@@ -10,7 +11,7 @@ export const resourcePages = {
     shortTitle: "Projects",
     subtitle: "Upload, preview, favorite, and download Sketchware Pro project bundles.",
     uploadTitle: "Upload Project File",
-    accept: ".swb,.zip,application/zip,application/x-zip-compressed,application/octet-stream,*/*",
+    accept: ".swb,.zip",
     requiresProjectAssets: true,
     icon: "folder"
   },
@@ -22,7 +23,7 @@ export const resourcePages = {
     shortTitle: "Blocks",
     subtitle: "Reusable block collections with category and sorting controls.",
     uploadTitle: "Upload Custom Block File",
-    accept: ".json,.txt,.java,.kt,.xml,.zip,.rar,.swb,application/json,text/plain,text/xml,application/zip,application/x-zip-compressed,application/vnd.rar,application/x-rar-compressed,application/octet-stream,*/*",
+    accept: ".json,.txt,.zip,.swb,*",
     requiresProjectAssets: false,
     icon: "blocks"
   },
@@ -34,7 +35,7 @@ export const resourcePages = {
     shortTitle: "Libraries",
     subtitle: "Manage Sketchware libraries with searchable, favorite-ready lists.",
     uploadTitle: "Upload Library File",
-    accept: ".jar,.aar,.zip,.rar,application/java-archive,application/zip,application/x-zip-compressed,application/vnd.rar,application/x-rar-compressed,application/octet-stream,*/*",
+    accept: ".jar,.aar,.zip,*",
     requiresProjectAssets: false,
     icon: "library"
   },
@@ -46,7 +47,7 @@ export const resourcePages = {
     shortTitle: "Icons",
     subtitle: "A polished catalog for image assets and icon packs.",
     uploadTitle: "Upload Icon File",
-    accept: ".png,.jpg,.jpeg,.webp,.svg,.zip,.rar,image/*,application/zip,application/x-zip-compressed,application/vnd.rar,application/x-rar-compressed,*/*",
+    accept: ".png,.jpg,.jpeg,.webp,.svg,.zip,*",
     requiresProjectAssets: false,
     icon: "image"
   }
@@ -215,7 +216,15 @@ export function filterItems(items, filters, nameKey = "file_name") {
 }
 
 export function highlightJava(code = "") {
-  const escaped = escapeHtml(code);
+  const source = String(code || "");
+  if (globalThis.Prism?.languages?.java) {
+    try {
+      return Prism.highlight(source, Prism.languages.java, "java");
+    } catch {
+      /* fallback */
+    }
+  }
+  const escaped = escapeHtml(source);
   const keywords =
     "\\b(abstract|assert|boolean|break|byte|case|catch|char|class|const|continue|default|do|double|else|enum|extends|final|finally|float|for|goto|if|implements|import|instanceof|int|interface|long|native|new|null|package|private|protected|public|return|short|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|void|volatile|while)\\b";
   return escaped
@@ -223,6 +232,56 @@ export function highlightJava(code = "") {
     .replace(/(&quot;.*?&quot;|&#039;.*?&#039;)/g, '<span class="code-string">$1</span>')
     .replace(new RegExp(keywords, "g"), '<span class="code-keyword">$1</span>')
     .replace(/\b(\d+)\b/g, '<span class="code-number">$1</span>');
+}
+
+export function uploadStatusMarkup(upload) {
+  if (!upload?.active && !upload?.error) return "";
+  const percent = upload.percent ?? 0;
+  const statusClass = upload.error ? "is-error" : upload.percent === 100 ? "is-success" : "";
+  return `<div class="upload-status ${statusClass}" role="status" aria-live="polite">
+    <div class="upload-status-head">
+      <strong>${escapeHtml(upload.message || t("upload.preparing"))}</strong>
+      <span>${upload.error ? "" : `${percent}%`}</span>
+    </div>
+    <div class="progress-track" aria-hidden="true"><span style="width:${percent}%"></span></div>
+    ${
+      upload.error
+        ? `<p class="upload-error">${escapeHtml(upload.error)}</p>
+          <div class="upload-status-actions">
+            <button class="button secondary compact" type="button" data-action="retry-upload">${t("common.retry")}</button>
+            <button class="button ghost compact" type="button" data-action="cancel-upload">${t("common.cancel")}</button>
+          </div>`
+        : upload.active
+          ? `<button class="button ghost compact" type="button" data-action="cancel-upload">${t("common.cancel")}</button>`
+          : ""
+    }
+  </div>`;
+}
+
+export function statSparkline(values = []) {
+  const points = values.length ? values : [4, 7, 5, 9, 6, 8];
+  const max = Math.max(...points, 1);
+  const coords = points
+    .map((value, index) => {
+      const x = (index / Math.max(points.length - 1, 1)) * 100;
+      const y = 100 - (value / max) * 100;
+      return `${x},${y}`;
+    })
+    .join(" ");
+  return `<svg class="stat-sparkline" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+    <polyline points="${coords}" />
+  </svg>`;
+}
+
+export function skeletonListRows(count = 5) {
+  return Array.from({ length: count })
+    .map(
+      () => `<article class="list-row skeleton-row" aria-hidden="true">
+        <span class="skeleton avatar-line"></span>
+        <span class="skeleton line wide"></span>
+      </article>`
+    )
+    .join("");
 }
 
 export function downloadBlob(blob, filename) {

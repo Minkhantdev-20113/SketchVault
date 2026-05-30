@@ -1,4 +1,5 @@
 import { CONFIG, isSupabaseConfigured } from "./config.js";
+import { getLocale, languageSwitcherHtml, setLocale, t } from "./i18n.js";
 import { icon } from "./icons.js";
 import {
   canManage,
@@ -37,21 +38,28 @@ import {
   initials,
   resourcePages,
   skeletonCards,
+  skeletonListRows,
   sortingDropdown,
-  toast
+  statSparkline,
+  toast,
+  uploadStatusMarkup
 } from "./ui.js";
 
 const app = document.getElementById("app");
 const protectedRoutes = new Set(["dashboard", "projects", "java", "blocks", "libraries", "icons", "appearance"]);
 const navItems = [
-  { route: "dashboard", label: "Main Dashboard", icon: "dashboard" },
-  { route: "projects", label: "Project Files", icon: "folder" },
-  { route: "java", label: "Java Source Code", icon: "code" },
-  { route: "blocks", label: "Custom Blocks Files", icon: "blocks" },
-  { route: "libraries", label: "Library Files", icon: "library" },
-  { route: "icons", label: "Icon Files", icon: "image" },
-  { route: "appearance", label: "Appearance", icon: "palette" }
+  { route: "dashboard", labelKey: "nav.dashboard", icon: "dashboard" },
+  { route: "projects", labelKey: "nav.projects", icon: "folder" },
+  { route: "java", labelKey: "nav.java", icon: "code" },
+  { route: "blocks", labelKey: "nav.blocks", icon: "blocks" },
+  { route: "libraries", labelKey: "nav.libraries", icon: "library" },
+  { route: "icons", labelKey: "nav.icons", icon: "image" },
+  { route: "appearance", labelKey: "nav.appearance", icon: "palette" }
 ];
+
+function navLabel(item) {
+  return t(item.labelKey);
+}
 
 const baseFilter = () => ({
   search: "",
@@ -67,7 +75,10 @@ const state = {
   dataLoading: false,
   sidebarCollapsed: localStorage.getItem("sidebar-collapsed") === "true",
   mobileNavOpen: false,
-  theme: localStorage.getItem("theme") || "light",
+  theme: localStorage.getItem("theme") || "system",
+  locale: getLocale(),
+  upload: { active: false, message: "", percent: 0, error: "", retry: null },
+  uploadAbort: null,
   session: null,
   user: null,
   profile: null,
@@ -95,8 +106,12 @@ const state = {
 };
 
 function parseRoute() {
-  const raw = window.location.hash.replace(/^#\/?/, "");
-  if (!raw || raw.startsWith("access_token") || raw.startsWith("error")) return "landing";
+  const hash = window.location.hash;
+  if (hash.includes("access_token") || hash.includes("error=") || hash.includes("type=recovery")) {
+    return "auth";
+  }
+  const raw = hash.replace(/^#\/?/, "");
+  if (!raw) return "landing";
   return raw.split("?")[0] || "landing";
 }
 
@@ -109,12 +124,44 @@ function navigate(route) {
   }
 }
 
+function resolvedTheme() {
+  if (state.theme === "system") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  return state.theme === "dark" ? "dark" : "light";
+}
+
 function applyTheme() {
-  document.documentElement.dataset.theme = state.theme;
+  const active = resolvedTheme();
+  document.documentElement.dataset.theme = active;
   document.querySelector('meta[name="theme-color"]')?.setAttribute(
     "content",
-    state.theme === "dark" ? "#111827" : "#f7f8fb"
+    active === "dark" ? "#111827" : "#f7f8fb"
   );
+}
+
+function themeToggleHtml(compact = false) {
+  const modes = [
+    { id: "light", label: t("theme.light"), icon: "sun" },
+    { id: "dark", label: t("theme.dark"), icon: "moon" },
+    { id: "system", label: t("theme.system"), icon: "palette" }
+  ];
+  return `<div class="theme-switch${compact ? " theme-switch--compact" : ""}" role="group" aria-label="${t("theme.aria")}">
+    ${modes
+      .map(
+        (mode) => `<button type="button" class="theme-switch-btn${state.theme === mode.id ? " active" : ""}" data-action="set-theme" data-theme="${mode.id}" title="${mode.label}">
+          ${icon(mode.icon, 16)}<span class="theme-switch-label">${mode.label}</span>
+        </button>`
+      )
+      .join("")}
+  </div>`;
+}
+
+function setTheme(mode) {
+  state.theme = mode;
+  localStorage.setItem("theme", mode);
+  applyTheme();
+  render();
 }
 
 function username() {
@@ -142,7 +189,7 @@ function normalizeRoute() {
     history.replaceState(null, "", "#/auth");
   }
 
-  if (!state.authLoading && state.route === "auth" && isSignedIn()) {
+  if (!state.authLoading && state.route === "auth" && isSignedIn() && state.authMode !== "recovery") {
     state.route = "dashboard";
     history.replaceState(null, "", "#/dashboard");
   }
@@ -168,6 +215,19 @@ function render() {
 
 async function boot() {
   bindEvents();
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (state.theme === "system") applyTheme();
+  });
+  const hash = window.location.hash;
+  if (
+    hash.includes("type=recovery") ||
+    hash.includes("access_token") ||
+    window.location.search.includes("type=recovery")
+  ) {
+    state.route = "auth";
+    state.authMode = hash.includes("type=recovery") || window.location.search.includes("type=recovery") ? "recovery" : state.authMode;
+    if (hash.includes("access_token")) state.authMode = "recovery";
+  }
   render();
 
   try {
@@ -226,8 +286,11 @@ async function loadRouteData(force = false) {
   const route = state.route;
   if (!force && state.data[route]) return;
 
-  state.dataLoading = true;
-  render();
+  const showSkeleton = state.data[route] === null;
+  if (showSkeleton) {
+    state.dataLoading = true;
+    render();
+  }
   try {
     if (route === "dashboard") {
       state.data.dashboard = await loadDashboardData();
@@ -259,15 +322,17 @@ function renderLanding() {
   const startTarget = isSignedIn() ? "dashboard" : "auth";
   return `<main class="landing">
     <header class="landing-nav">
-      <a class="brand" href="#/" aria-label="Sketchware Pro Hub home">
+      <a class="brand" href="#/" aria-label="${CONFIG.appName} ပင်မစာမျက်နှာ">
         <span class="brand-mark">S</span>
-        <span>Sketchware Pro Hub</span>
+        <span>${CONFIG.appName}</span>
       </a>
       <nav class="landing-actions" aria-label="Landing actions">
-        <a class="button ghost" href="${CONFIG.docsUrl}">${icon("book", 18)}Documentation</a>
-        <a class="button ghost" href="${CONFIG.toolsUrl}">${icon("tools", 18)}Other Tools</a>
+        ${themeToggleHtml(true)}
+        ${languageSwitcherHtml(true)}
+        <a class="button ghost" href="${CONFIG.docsUrl}">${icon("book", 18)}${t("common.documentation")}</a>
+        <a class="button ghost" href="${CONFIG.toolsUrl}">${icon("tools", 18)}${t("common.tools")}</a>
         <button class="button primary" type="button" data-action="navigate" data-route="${startTarget}">
-          ${icon("chevronRight", 18)}Get Started
+          ${icon("chevronRight", 18)}${t("common.getStarted")}
         </button>
       </nav>
     </header>
@@ -275,21 +340,18 @@ function renderLanding() {
     <section class="hero-section">
       <div class="hero-bg" aria-hidden="true"></div>
       <div class="hero-copy">
-        <p class="eyebrow">Sketchware Pro resource platform</p>
-        <h1>Sketchware Pro Hub</h1>
-        <p>
-          A polished SaaS workspace for managing Sketchware project files, Java source code, custom blocks,
-          libraries, icons, previews, favorites, and secure downloads from one mobile-first dashboard.
-        </p>
+        <p class="eyebrow">${t("landing.eyebrow")}</p>
+        <h1>${CONFIG.appName}</h1>
+        <p>${t("landing.hero")}</p>
         <div class="hero-actions">
           <button class="button primary large" type="button" data-action="navigate" data-route="${startTarget}">
-            ${icon("chevronRight", 20)}Get Started
+            ${icon("chevronRight", 20)}${t("common.getStarted")}
           </button>
-          <a class="button secondary large" href="${CONFIG.docsUrl}">${icon("book", 20)}Documentation</a>
+          <a class="button secondary large" href="${CONFIG.docsUrl}">${icon("book", 20)}${t("common.documentation")}</a>
         </div>
       </div>
-      <div class="hero-media" aria-label="Sketchware Pro Hub dashboard preview">
-        <img src="assets/hero-dashboard.png" alt="Sketchware Pro Hub dashboard preview" />
+      <div class="hero-media" aria-label="${CONFIG.appName} dashboard အစမ်းကြည့်ရှု">
+        <img src="assets/hero-dashboard.png" alt="${CONFIG.appName} dashboard အစမ်းကြည့်ရှု" />
       </div>
     </section>
 
@@ -337,30 +399,50 @@ function renderAuth() {
         <div>${icon("alert", 22)}</div>
         <div>
           <h3>Supabase setup required</h3>
-          <p>Authentication and uploads are disabled until you add real Supabase credentials in <code>src/config.js</code> and run the SQL in <code>supabase/schema.sql</code>.</p>
+          <p>Add your Supabase URL and anon key in <code>src/config.js</code>, then run <code>supabase/schema.sql</code>.</p>
         </div>
       </section>`
     : "";
 
   const mode = state.authMode;
+  const titles = {
+    signup: t("auth.createAccount"),
+    forgot: t("auth.resetAccess"),
+    recovery: t("auth.setNewPassword"),
+    signin: t("auth.welcome")
+  };
   return `<main class="auth-page">
-    <a class="brand auth-brand" href="#/">
-      <span class="brand-mark">S</span>
-      <span>Sketchware Pro Hub</span>
-    </a>
+    <div class="auth-topbar">
+      <a class="brand" href="#/">
+        <span class="brand-mark">S</span>
+        <span>${CONFIG.appName}</span>
+      </a>
+      <div class="auth-topbar-controls">
+        ${languageSwitcherHtml(true)}
+        ${themeToggleHtml(true)}
+      </div>
+    </div>
     <section class="auth-card">
       <div class="auth-copy">
-        <p class="eyebrow">Secure workspace</p>
-        <h1>${mode === "signup" ? "Create your account" : mode === "forgot" ? "Reset access" : "Welcome back"}</h1>
-        <p>Use email, Google, or GitHub to manage Sketchware resources with private storage and protected edit controls.</p>
+        <p class="eyebrow">${t("auth.secureWorkspace")}</p>
+        <h1>${titles[mode] || titles.signin}</h1>
+        <p>${t("auth.subtitle")}</p>
       </div>
       ${configuredNotice}
-      <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
-        ${authTab("signin", "Sign In")}
-        ${authTab("signup", "Sign Up")}
-        ${authTab("forgot", "Reset")}
+      <div class="auth-tabs" role="tablist" aria-label="Authentication">
+        ${authTab("signin", t("auth.signIn"))}
+        ${authTab("signup", t("auth.signUp"))}
+        ${authTab("forgot", t("auth.forgot"))}
       </div>
-      ${mode === "signup" ? renderSignUpForm() : mode === "forgot" ? renderForgotForm() : renderSignInForm()}
+      ${
+        mode === "recovery"
+          ? renderRecoveryForm()
+          : mode === "signup"
+            ? renderSignUpForm()
+            : mode === "forgot"
+              ? renderForgotForm()
+              : renderSignInForm()
+      }
     </section>
   </main>`;
 }
@@ -371,69 +453,89 @@ function authTab(mode, label) {
   }">${label}</button>`;
 }
 
-function passwordField(name, label, autocomplete, placeholder) {
-  return `<label class="field password-field">
-    <span class="field-label">${escapeHtml(label)}</span>
+function passwordField(name, label, placeholder, autocomplete, required = true) {
+  return `<label class="field has-password-toggle">
+    <span class="field-label">${label}</span>
     <span class="input-icon">${icon("lock", 18)}</span>
-    <input type="password" name="${name}" autocomplete="${autocomplete}" required minlength="6" placeholder="${escapeHtml(placeholder)}" />
-    <button class="password-toggle" type="button" data-action="toggle-password" aria-label="Show ${escapeHtml(label)}" aria-pressed="false">
-      ${icon("eye", 18)}
-    </button>
+    <input type="password" name="${name}" autocomplete="${autocomplete}" ${required ? "required" : ""} minlength="6" placeholder="${escapeHtml(
+      placeholder
+    )}" />
+    <button class="password-toggle" type="button" data-action="toggle-password" aria-label="${t("auth.showPassword")}">${icon(
+      "eye",
+      18
+    )}</button>
   </label>`;
 }
 
 function renderSignInForm() {
   return `<form class="auth-form" data-form="signin">
     <label class="field">
-      <span class="field-label">Email</span>
+      <span class="field-label">${t("auth.email")}</span>
       <span class="input-icon">${icon("mail", 18)}</span>
       <input type="email" name="email" autocomplete="email" required placeholder="you@example.com" />
     </label>
-    ${passwordField("password", "Password", "current-password", "Your password")}
-    <button class="button primary full" type="submit">${icon("chevronRight", 18)}Sign In</button>
-    ${oauthButtons("Sign in")}
+    ${passwordField("password", t("auth.password"), "Your password", "current-password")}
+    <button class="button primary full" type="submit">${icon("chevronRight", 18)}${t("auth.signIn")}</button>
+    ${oauthButtons()}
+    <p class="auth-hint"><button type="button" class="link-button" data-action="auth-mode" data-mode="forgot">${t("auth.forgotLink")}</button></p>
   </form>`;
 }
 
 function renderSignUpForm() {
   return `<form class="auth-form" data-form="signup">
     <label class="field">
-      <span class="field-label">Username</span>
+      <span class="field-label">${t("auth.username")}</span>
       <span class="input-icon">${icon("user", 18)}</span>
-      <input type="text" name="username" autocomplete="nickname" required minlength="2" maxlength="32" placeholder="Your display name" />
+      <input type="text" name="username" autocomplete="nickname" required minlength="2" maxlength="32" placeholder="ပြသမည့် အမည်" />
     </label>
     <label class="field">
-      <span class="field-label">Email</span>
+      <span class="field-label">${t("auth.email")}</span>
       <span class="input-icon">${icon("mail", 18)}</span>
       <input type="email" name="email" autocomplete="email" required placeholder="you@example.com" />
     </label>
-    ${passwordField("password", "Password", "new-password", "At least 6 characters")}
-    ${passwordField("confirmPassword", "Confirm Password", "new-password", "Repeat your password")}
-    <button class="button primary full" type="submit">${icon("chevronRight", 18)}Create Account</button>
-    ${oauthButtons("Sign up")}
+    ${passwordField("password", t("auth.password"), "At least 6 characters", "new-password")}
+    <button class="button primary full" type="submit">${icon("chevronRight", 18)}${t("auth.signUp")}</button>
+    ${oauthButtons()}
   </form>`;
 }
 
 function renderForgotForm() {
-  return `<form class="auth-form" data-form="forgot">
-    <label class="field">
-      <span class="field-label">Email</span>
-      <span class="input-icon">${icon("mail", 18)}</span>
-      <input type="email" name="email" autocomplete="email" required placeholder="you@example.com" />
-    </label>
-    <button class="button primary full" type="submit">${icon("mail", 18)}Send Reset Link</button>
-  </form>
-  <form class="auth-form compact-form" data-form="password-update">
-    ${passwordField("password", "New password after opening reset link", "new-password", "New password")}
-    ${passwordField("confirmPassword", "Confirm new password", "new-password", "Repeat new password")}
-    <button class="button secondary full" type="submit">${icon("check", 18)}Update Password</button>
-  </form>`;
+  return `<div class="reset-flow">
+    <ol class="reset-steps">
+      <li class="active"><strong>1</strong> ${t("auth.reset.step1")}</li>
+      <li><strong>2</strong> ${t("auth.reset.step2")}</li>
+      <li><strong>3</strong> ${t("auth.reset.step3")}</li>
+    </ol>
+    <form class="auth-form" data-form="forgot">
+      <label class="field">
+        <span class="field-label">${t("auth.email")}</span>
+        <span class="input-icon">${icon("mail", 18)}</span>
+        <input type="email" name="email" autocomplete="email" required placeholder="you@example.com" />
+      </label>
+      <button class="button primary full" type="submit">${icon("mail", 18)}${t("auth.reset.send")}</button>
+    </form>
+    <p class="auth-hint"><button type="button" class="link-button" data-action="auth-mode" data-mode="recovery">${t("auth.reset.recoveryLink")}</button></p>
+  </div>`;
 }
 
-function oauthButtons(prefix) {
-  return `<div class="oauth-grid">
-    <button class="button oauth" type="button" data-action="oauth" data-provider="google"><span class="oauth-mark">G</span>${prefix} with Google</button>
-    <button class="button oauth" type="button" data-action="oauth" data-provider="github"><span class="oauth-mark">GH</span>${prefix} with GitHub</button>
+function renderRecoveryForm() {
+  return `<div class="reset-flow">
+    <ol class="reset-steps">
+      <li><strong>1</strong> ${t("auth.reset.step1")}</li>
+      <li><strong>2</strong> ${t("auth.reset.step2")}</li>
+      <li class="active"><strong>3</strong> ${t("auth.reset.step3")}</li>
+    </ol>
+    <form class="auth-form" data-form="password-update">
+      ${passwordField("password", t("auth.password"), "At least 6 characters", "new-password")}
+      <button class="button primary full" type="submit">${icon("check", 18)}${t("auth.reset.update")}</button>
+    </form>
+    <p class="auth-hint"><button type="button" class="link-button" data-action="auth-mode" data-mode="signin">${t("auth.reset.backSignIn")}</button></p>
+  </div>`;
+}
+
+function oauthButtons() {
+  return `<div class="oauth-grid single">
+    <button class="button oauth" type="button" data-action="oauth" data-provider="github"><span class="oauth-mark">GH</span>${t("auth.github")}</button>
   </div>`;
 }
 
@@ -443,8 +545,9 @@ function renderShell(content) {
     ${renderSidebar()}
     <section class="workspace">
       ${renderTopbar()}
-      <main class="page-view">${content}${renderModal()}</main>
+      <main class="page-view">${content}</main>
     </section>
+    ${renderModal()}
   </div>`;
 }
 
@@ -453,32 +556,29 @@ function renderSidebar() {
     <div class="sidebar-head">
       <a class="brand" href="#/dashboard">
         <span class="brand-mark">S</span>
-        <span class="brand-text">Sketchware Hub</span>
+        <span class="brand-text">${CONFIG.appName}</span>
       </a>
       <button class="icon-button sidebar-close" type="button" data-action="close-mobile-nav" aria-label="Close sidebar">${icon("x", 18)}</button>
     </div>
     <nav class="sidebar-nav">
       ${navItems
         .map(
-          (item) => `<button type="button" title="${item.label}" class="nav-item${
+          (item) => `<button type="button" title="${navLabel(item)}" class="nav-item${
             state.route === item.route ? " active" : ""
           }" data-action="navigate" data-route="${item.route}">
             ${icon(item.icon, 20)}
-            <span>${item.label}</span>
+            <span>${navLabel(item)}</span>
           </button>`
         )
         .join("")}
     </nav>
     <div class="sidebar-footer">
-      <button class="nav-item theme-item" type="button" data-action="toggle-theme" title="Toggle theme">
-        ${icon(state.theme === "dark" ? "sun" : "moon", 20)}
-        <span>${state.theme === "dark" ? "Light Mode" : "Dark Mode"}</span>
-      </button>
+      <div class="sidebar-theme">${themeToggleHtml()}</div>
       <div class="profile-chip">
         <span class="avatar">${initials(username())}</span>
         <span class="profile-copy">
           <strong>${escapeHtml(username())}</strong>
-          <small>${state.profile?.role === "admin" ? "Admin" : "Member"}</small>
+          <small>${state.profile?.role === "admin" ? t("common.admin") : t("common.member")}</small>
         </span>
       </div>
     </div>
@@ -486,28 +586,27 @@ function renderSidebar() {
 }
 
 function renderTopbar() {
-  const title = navItems.find((item) => item.route === state.route)?.label || "Workspace";
+  const current = navItems.find((item) => item.route === state.route);
+  const title = current ? navLabel(current) : t("common.workspace");
   return `<header class="topbar">
     <div class="topbar-left">
       <button class="icon-button" type="button" data-action="open-mobile-nav" aria-label="Open navigation">${icon("menu", 20)}</button>
       <button class="icon-button collapse-toggle" type="button" data-action="toggle-sidebar" aria-label="Collapse sidebar">
         ${icon(state.sidebarCollapsed ? "chevronRight" : "chevronLeft", 19)}
       </button>
-      <div>
-        <p class="eyebrow">Sketchware Pro Hub</p>
+      <div class="topbar-titles">
+        <p class="eyebrow">${CONFIG.appName}</p>
         <h2>${escapeHtml(title)}</h2>
       </div>
     </div>
     <div class="topbar-actions">
-      <button class="icon-button" type="button" data-action="toggle-theme" aria-label="Toggle theme">${icon(
-        state.theme === "dark" ? "sun" : "moon",
-        19
-      )}</button>
+      ${languageSwitcherHtml(true)}
+      ${themeToggleHtml(true)}
       <div class="topbar-user">
         <span class="avatar">${initials(username())}</span>
         <span>${escapeHtml(username())}</span>
       </div>
-      <button class="button ghost compact" type="button" data-action="signout">${icon("logout", 18)}Sign Out</button>
+      <button class="button ghost compact" type="button" data-action="signout">${icon("logout", 18)}${t("common.signOut")}</button>
     </div>
   </header>`;
 }
@@ -522,7 +621,7 @@ function renderProtectedPage() {
 
 function renderDashboard() {
   if ((state.dataLoading || state.data.dashboard === null) && !state.data.dashboard) {
-    return `<section class="page-section">${renderPageHeader("Welcome back", "Loading your Sketchware resource workspace.", "dashboard")}${skeletonCards(
+    return `<section class="page-section">${renderPageHeader(t("auth.welcome"), t("dashboard.loading"), "dashboard")}${skeletonCards(
       6
     )}</section>`;
   }
@@ -539,12 +638,12 @@ function renderDashboard() {
   ].filter(Boolean));
 
   return `<section class="page-section dashboard-page">
-    ${renderPageHeader(`Welcome, ${username()}`, "A real-time control center for your Sketchware Pro resources.", "dashboard")}
+    ${renderPageHeader(`${t("dashboard.welcome")}, ${username()}`, t("dashboard.subtitle"), "dashboard")}
     <div class="stats-grid">
-      ${statCard("Project Files", projects, "folder")}
-      ${statCard("Java Snippets", javaCount, "code")}
-      ${statCard("Files Total", dashboard.resources.length, "cloud")}
-      ${statCard("Categories", categories.size, "filter")}
+      ${statCard(t("dashboard.stat.projects"), projects, "folder", "primary", [3, 5, 4, projects || 2, 6, projects || 3], dashboard.resources.length || 8)}
+      ${statCard(t("dashboard.stat.java"), javaCount, "code", "accent", [2, 4, javaCount || 1, 5, 3, javaCount || 2], Math.max(javaCount, 8))}
+      ${statCard(t("dashboard.stat.files"), dashboard.resources.length, "cloud", "success", [4, 6, 5, 8, dashboard.resources.length || 4, 7], Math.max(dashboard.resources.length, 12))}
+      ${statCard(t("dashboard.stat.categories"), categories.size, "filter", "warning", [1, 2, categories.size || 1, 3, 2, categories.size || 2], CONFIG.categories.length)}
     </div>
     <div class="dashboard-layout">
       <section class="panel wide-panel">
@@ -626,13 +725,20 @@ function resourceIcon(kind) {
   return route?.icon || "file";
 }
 
-function statCard(label, value, iconName) {
-  return `<article class="stat-card">
-    <span>${icon(iconName, 21)}</span>
-    <div>
-      <strong>${Number(value).toLocaleString()}</strong>
-      <small>${label}</small>
+function statCard(label, value, iconName, tone = "primary", spark = [], maxHint = 10) {
+  const numeric = Number(value);
+  const cap = Math.max(maxHint, numeric, 1);
+  const percent = Math.min(100, Math.round((numeric / cap) * 100));
+  return `<article class="stat-card stat-card-rich tone-${tone}">
+    <div class="stat-card-top">
+      <span class="stat-icon">${icon(iconName, 20)}</span>
+      <strong>${numeric.toLocaleString()}</strong>
     </div>
+    <div class="stat-card-body">
+      <small>${escapeHtml(label)}</small>
+      <span class="stat-meter"><span style="width:${percent}%"></span></span>
+    </div>
+    ${statSparkline(spark)}
   </article>`;
 }
 
@@ -671,31 +777,34 @@ function renderResourcePage(page) {
   const filtered = filterItems(items, filters);
   const loading = (state.dataLoading || rawItems === null) && !rawItems;
   const isProject = page.route === "projects";
-  const isIconPage = page.route === "icons";
-  const viewMode = state.viewMode[page.route] || "list";
+  const isIcon = page.route === "icons";
+  const gridMode = isProject ? state.viewMode.projects === "grid" : isIcon ? state.viewMode.icons === "grid" : false;
 
   return `<section class="page-section resource-page">
     ${renderSectionToolbar(page, filtered.length, items.length)}
     ${
       loading
-        ? `<div class="${(isProject || isIconPage) && viewMode === "grid" ? "resource-grid" : "resource-list"}">${skeletonCards(
-            6
-          )}</div>`
+        ? gridMode
+          ? `<div class="resource-grid">${skeletonCards(6)}</div>`
+          : `<div class="resource-list">${skeletonListRows(6)}</div>`
         : filtered.length
           ? isProject
             ? renderProjectCollection(filtered)
-            : isIconPage
-              ? renderIconCollection(filtered, page)
+            : isIcon && gridMode
+              ? renderIconGrid(filtered, page)
               : renderResourceList(filtered, page)
           : emptyState(
-              "No matching files",
-              "Upload a resource or adjust the search, category, sort, and favorites filters.",
+              t("resource.noMatch"),
+              t("resource.noMatchHint"),
               `<button class="button primary" type="button" data-action="open-upload" data-route="${page.route}">${icon(
                 "plus",
                 18
-              )}Add New</button>`
+              )}${t("common.addNew")}</button>`
             )
     }
+    <button class="fab" type="button" data-action="open-upload" data-route="${page.route}" aria-label="${t("common.addNew")}">
+      ${icon("plus", 24)}
+    </button>
   </section>`;
 }
 
@@ -717,16 +826,14 @@ function renderSectionToolbar(page, shown, total) {
     action: "filter-dropdown-option",
     compact: true
   });
-  const hasViewToggle = page.route === "projects" || page.route === "icons";
-  const mode = state.viewMode[page.route] || "list";
   const viewToggle =
-    hasViewToggle
-      ? `<div class="segmented" aria-label="${escapeHtml(page.shortTitle)} view mode">
-        <button type="button" class="${mode === "grid" ? "active" : ""}" data-action="view-mode" data-route="${page.route}" data-mode="grid" aria-label="Grid view">${icon(
+    page.route === "projects" || page.route === "icons"
+      ? `<div class="segmented" aria-label="မြင်ကွင်း မုဒ်">
+        <button type="button" class="${(page.route === "projects" ? state.viewMode.projects : state.viewMode.icons) === "grid" ? "active" : ""}" data-action="view-mode" data-route="${page.route}" data-mode="grid" aria-label="Grid">${icon(
           "grid",
           18
         )}</button>
-        <button type="button" class="${mode === "list" ? "active" : ""}" data-action="view-mode" data-route="${page.route}" data-mode="list" aria-label="List view">${icon(
+        <button type="button" class="${(page.route === "projects" ? state.viewMode.projects : state.viewMode.icons) === "list" ? "active" : ""}" data-action="view-mode" data-route="${page.route}" data-mode="list" aria-label="List">${icon(
           "list",
           18
         )}</button>
@@ -755,11 +862,44 @@ function renderSectionToolbar(page, shown, total) {
       ${category}
       ${sorting}
       ${viewToggle}
-      <button class="button primary compact" type="button" data-action="open-upload" data-route="${page.route}">
-        ${icon("plus", 18)}Add New
+      <button class="button primary compact hide-mobile-add" type="button" data-action="open-upload" data-route="${page.route}">
+        ${icon("plus", 18)}${t("common.addNew")}
       </button>
     </div>
   </div>`;
+}
+
+function renderIconGrid(items, page) {
+  return `<div class="resource-grid icon-grid">${items
+    .map(
+      (item) => `<article class="resource-card icon-card">
+        <div class="resource-card-top">
+          <span class="file-thumb">${item.icon_url ? `<img src="${item.icon_url}" alt="" />` : icon("image", 24)}</span>
+          ${favoriteButton("resource", item)}
+        </div>
+        <h3>${escapeHtml(item.file_name)}</h3>
+        <div class="meta-row">
+          <span>${escapeHtml(item.category || "Uncategorized")}</span>
+          <span>${fileSize(item.file_size)}</span>
+        </div>
+        <div class="row-actions card-actions">
+          ${downloadButton(item)}
+          ${
+            canManage(state.user, state.profile, item)
+              ? `<button class="icon-button" type="button" data-action="edit-resource" data-route="${page.route}" data-id="${item.id}">${icon(
+                  "edit",
+                  18
+                )}</button>
+                <button class="icon-button danger" type="button" data-action="delete-resource" data-route="${page.route}" data-id="${item.id}">${icon(
+                  "trash",
+                  18
+                )}</button>`
+              : ""
+          }
+        </div>
+      </article>`
+    )
+    .join("")}</div>`;
 }
 
 function renderProjectCollection(items) {
@@ -779,41 +919,6 @@ function renderProjectCollection(items) {
         <div class="meta-row">
           <span>${escapeHtml(item.category || "Uncategorized")}</span>
           <span>${formatDate(item.created_at)}</span>
-        </div>
-      </article>`
-    )
-    .join("")}</div>`;
-}
-
-function renderIconCollection(items, page) {
-  if (state.viewMode.icons === "list") {
-    return `<div class="resource-list icon-list">${items
-      .map(
-        (item) => `<article class="list-row icon-row">
-          <button class="row-main clickable" type="button" data-action="open-resource-detail" data-route="${page.route}" data-id="${item.id}">
-            <span class="file-thumb icon-thumb small">${item.icon_url ? `<img src="${item.icon_url}" alt="" />` : icon(page.icon, 22)}</span>
-            <span>
-              <strong>${escapeHtml(item.file_name)}</strong>
-              <small>${escapeHtml(item.category || "Uncategorized")} &bull; ${formatDate(item.created_at)} ${fileSize(item.file_size)}</small>
-            </span>
-          </button>
-          <div class="row-actions">${favoriteButton("resource", item)}</div>
-        </article>`
-      )
-      .join("")}</div>`;
-  }
-
-  return `<div class="resource-grid icon-grid">${items
-    .map(
-      (item) => `<article class="resource-card icon-card interactive" data-action="open-resource-detail" data-route="${page.route}" data-id="${item.id}" tabindex="0">
-        <div class="resource-card-top">
-          <span class="file-thumb icon-thumb">${item.icon_url ? `<img src="${item.icon_url}" alt="" />` : icon(page.icon, 28)}</span>
-          ${favoriteButton("resource", item)}
-        </div>
-        <h3>${escapeHtml(item.file_name)}</h3>
-        <div class="meta-row">
-          <span>${escapeHtml(item.category || "Uncategorized")}</span>
-          <span>${fileSize(item.file_size) || formatDate(item.created_at)}</span>
         </div>
       </article>`
     )
@@ -863,7 +968,12 @@ function favoriteButton(kind, item) {
 
 function downloadButton(item) {
   const progress = state.downloads[item.id];
-  const label = progress?.status === "downloading" ? `${progress.percent || 0}%` : progress?.status === "error" ? "Retry" : "Download";
+  const label =
+    progress?.status === "downloading"
+      ? `${progress.percent || 0}%`
+      : progress?.status === "error"
+        ? t("common.retry")
+        : t("common.download");
   return `<button class="button ghost compact download-action" type="button" data-action="download-resource" data-id="${item.id}" data-download-id="${
     item.id
   }">
@@ -919,7 +1029,7 @@ function renderJavaPage() {
     </div>
     ${
       loading
-        ? `<div class="resource-list">${skeletonCards(5)}</div>`
+        ? `<div class="resource-list">${skeletonListRows(5)}</div>`
         : filtered.length
           ? `<div class="resource-list">${filtered
               .map((item) => renderJavaRow(item))
@@ -950,18 +1060,23 @@ function renderJavaRow(item) {
 }
 
 function renderAppearancePage() {
+  const active = resolvedTheme();
+  const themeLabel =
+    state.theme === "system"
+      ? `${t("theme.system")} (${active === "dark" ? t("theme.dark") : t("theme.light")})`
+      : state.theme === "dark"
+        ? t("theme.dark")
+        : t("theme.light");
   return `<section class="page-section">
-    ${renderPageHeader("Appearance", "Switch between light and dark mode. Your preference is saved locally.", "palette")}
+    ${renderPageHeader(t("appearance.title"), t("appearance.subtitle"), "palette")}
     <div class="appearance-grid">
       <article class="panel theme-preview">
         <div class="panel-head">
           <div>
-            <p class="eyebrow">Theme</p>
-            <h3>${state.theme === "dark" ? "Dark Mode" : "Light Mode"}</h3>
+            <p class="eyebrow">${t("theme.aria")}</p>
+            <h3>${themeLabel}</h3>
           </div>
-          <button class="button primary compact" type="button" data-action="toggle-theme">
-            ${icon(state.theme === "dark" ? "sun" : "moon", 18)}Switch Theme
-          </button>
+          ${themeToggleHtml()}
         </div>
         <div class="preview-stack">
           <span></span><span></span><span></span>
@@ -970,12 +1085,22 @@ function renderAppearancePage() {
       <article class="panel">
         <div class="panel-head">
           <div>
-            <p class="eyebrow">Sidebar</p>
-            <h3>Navigation density</h3>
+            <p class="eyebrow">${t("appearance.language")}</p>
+            <h3>${getLocale() === "my" ? t("lang.my") : t("lang.en")}</h3>
           </div>
-          <button class="button ghost compact" type="button" data-action="toggle-sidebar">${icon("menu", 18)}Toggle</button>
         </div>
-        <p class="muted">Desktop navigation can expand for labels or collapse into icon-only mode. Mobile uses a cancelable overlay drawer.</p>
+        <p class="muted">${t("appearance.languageHint")}</p>
+        ${languageSwitcherHtml()}
+      </article>
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">${t("appearance.sidebar")}</p>
+            <h3>${t("appearance.toggleSidebar")}</h3>
+          </div>
+          <button class="button ghost compact" type="button" data-action="toggle-sidebar">${icon("menu", 18)}${t("appearance.toggleSidebar")}</button>
+        </div>
+        <p class="muted">${t("appearance.sidebarHint")}</p>
       </article>
     </div>
   </section>`;
@@ -985,7 +1110,6 @@ function renderModal() {
   if (!state.modal) return "";
   if (state.modal.type === "resource-upload") return renderResourceUploadModal();
   if (state.modal.type === "project-detail") return renderProjectDetailModal();
-  if (state.modal.type === "resource-detail") return renderResourceDetailModal();
   if (state.modal.type === "java-upload") return renderJavaUploadModal();
   if (state.modal.type === "java-detail") return renderJavaDetailModal();
   return "";
@@ -999,7 +1123,7 @@ function modalFrame(title, body, size = "") {
         <h2 id="modal-title">${escapeHtml(title)}</h2>
         <button class="icon-button" type="button" data-action="close-modal" aria-label="Close dialog">${icon("x", 18)}</button>
       </div>
-      ${body}
+      <div class="modal-body">${body}</div>
     </section>
   </div>`;
 }
@@ -1017,33 +1141,42 @@ function renderResourceUploadModal() {
   const existing = state.modal.id ? findResource(page.route, state.modal.id) : null;
   const title = existing ? `Edit ${page.shortTitle}` : page.uploadTitle;
   const isProject = page.requiresProjectAssets;
-  const body = `<form class="modal-form" data-form="resource-upload" data-route="${page.route}" data-id="${existing?.id || ""}">
-    ${dropzone("mainFile", isProject ? "Project File (.swb or .zip)" : "File", page.accept, !existing, true)}
-    ${
-      isProject
-        ? `${dropzone("iconFile", "Icon File", "image/*", !existing)}
-          <div class="two-column">${dropzone("previewOne", "Preview Image 1", "image/*", !existing)}${dropzone(
-            "previewTwo",
-            "Preview Image 2",
-            "image/*",
-            !existing
-          )}</div>`
-        : ""
-    }
-    <label class="field">
-      <span class="field-label">File Name</span>
-      <input type="text" name="fileName" required maxlength="120" value="${escapeHtml(existing?.file_name || "")}" placeholder="Auto-filled from selected file" />
-    </label>
-    <label class="field">
-      <span class="field-label">Description</span>
-      <textarea name="description" rows="3" placeholder="${escapeHtml(CONFIG.defaultDescription)}">${escapeHtml(existing?.description || "")}</textarea>
-    </label>
-    <div class="two-column">${categoryDropdown("category", existing?.category || CONFIG.categories[0])}${sortingDropdown(
-      existing?.sort_key || "newest"
-    )}</div>
+  const isIcon = page.route === "icons";
+  const accept = isIcon ? "image/*,.zip,*/*" : page.accept.includes("*") ? "*/*" : page.accept;
+  const body = `<form class="modal-form modal-form--stacked" data-form="resource-upload" data-route="${page.route}" data-id="${existing?.id || ""}">
+    <div class="modal-scroll">
+      ${uploadStatusMarkup(state.upload)}
+      ${dropzone("mainFile", isProject ? "Project file (.swb / .zip)" : "File", accept, !existing, true)}
+      ${
+        isProject
+          ? `${dropzone("iconFile", "Icon file", "image/*", !existing)}
+            <div class="two-column">${dropzone("previewOne", "Preview image 1", "image/*", !existing)}${dropzone(
+              "previewTwo",
+              "Preview image 2",
+              "image/*",
+              !existing
+            )}</div>`
+          : ""
+      }
+      <label class="field">
+        <span class="field-label">${t("resource.fileName")}</span>
+        <input type="text" name="fileName" required maxlength="120" value="${escapeHtml(existing?.file_name || "")}" placeholder="Auto-filled from file name" />
+      </label>
+      ${
+        isIcon
+          ? ""
+          : `<label class="field">
+        <span class="field-label">${t("resource.description")}</span>
+        <textarea name="description" rows="3" placeholder="${escapeHtml(CONFIG.defaultDescription)}">${escapeHtml(existing?.description || "")}</textarea>
+      </label>`
+      }
+      <div class="two-column">${categoryDropdown("category", existing?.category || CONFIG.categories[0])}${sortingDropdown(
+        existing?.sort_key || "newest"
+      )}</div>
+    </div>
     <div class="modal-actions">
-      <button class="button ghost" type="button" data-action="close-modal">Cancel</button>
-      <button class="button primary" type="submit">${icon("upload", 18)}${existing ? "Save Changes" : "Upload"}</button>
+      <button class="button ghost" type="button" data-action="close-modal" ${state.upload.active ? "disabled" : ""}>${t("common.cancel")}</button>
+      <button class="button primary" type="submit" ${state.upload.active ? "disabled" : ""}>${icon("upload", 18)}${existing ? t("common.save") : t("common.upload")}</button>
     </div>
   </form>`;
   return modalFrame(title, body, "large");
@@ -1065,23 +1198,25 @@ function renderProjectDetailModal() {
   const item = findResource("projects", state.modal.id);
   if (!item) return "";
   const manage = canManage(state.user, state.profile, item);
-  const body = `<div class="detail-layout">
-    <div class="detail-hero">
-      <span class="file-thumb large">${item.icon_url ? `<img src="${item.icon_url}" alt="" />` : icon("folder", 36)}</span>
-      <div>
-        <p class="eyebrow">${escapeHtml(item.category || "Uncategorized")}</p>
-        <h3>${escapeHtml(item.file_name)}</h3>
-        <p>${escapeHtml(item.description || CONFIG.defaultDescription)}</p>
+  const body = `<div class="modal-detail--stacked">
+    <div class="modal-scroll detail-layout">
+      <div class="detail-hero">
+        <span class="file-thumb large">${item.icon_url ? `<img src="${item.icon_url}" alt="" />` : icon("folder", 36)}</span>
+        <div class="detail-hero-copy">
+          <p class="eyebrow">${escapeHtml(item.category || "Uncategorized")}</p>
+          <h3>${escapeHtml(item.file_name)}</h3>
+          <p>${escapeHtml(item.description || CONFIG.defaultDescription)}</p>
+        </div>
+        ${favoriteButton("resource", item)}
       </div>
-      ${favoriteButton("resource", item)}
-    </div>
-    <div class="preview-grid">
-      ${previewImage(item.preview_one_url, "Preview image one")}
-      ${previewImage(item.preview_two_url, "Preview image two")}
-    </div>
-    <div class="detail-meta">
-      <span>${icon("clock", 17)} Uploaded ${formatDate(item.created_at)}</span>
-      <span>${icon("download", 17)} ${Number(item.download_count || 0).toLocaleString()} downloads</span>
+      <div class="preview-grid">
+        ${previewImage(item.preview_one_url, "Preview image one")}
+        ${previewImage(item.preview_two_url, "Preview image two")}
+      </div>
+      <div class="detail-meta">
+        <span>${icon("clock", 17)} Uploaded ${formatDate(item.created_at)}</span>
+        <span>${icon("download", 17)} ${Number(item.download_count || 0).toLocaleString()} downloads</span>
+      </div>
     </div>
     <div class="modal-actions split">
       ${downloadButton(item)}
@@ -1091,11 +1226,11 @@ function renderProjectDetailModal() {
           ? `<button class="button secondary" type="button" data-action="edit-resource" data-route="projects" data-id="${item.id}">${icon(
               "edit",
               18
-            )}Edit</button>
+            )}${t("common.edit")}</button>
             <button class="button danger" type="button" data-action="delete-resource" data-route="projects" data-id="${item.id}">${icon(
               "trash",
               18
-            )}Delete</button>`
+            )}${t("common.delete")}</button>`
           : ""
       }
     </div>
@@ -1109,106 +1244,72 @@ function previewImage(url, alt) {
   }</figure>`;
 }
 
-function renderResourceDetailModal() {
-  const page = resourcePages[state.modal.route];
-  const item = page ? findResource(page.route, state.modal.id) : null;
-  if (!item) return "";
-  const manage = canManage(state.user, state.profile, item);
-  const body = `<div class="detail-layout resource-detail-layout">
-    <div class="detail-hero">
-      <span class="file-thumb large">${item.icon_url ? `<img src="${item.icon_url}" alt="" />` : icon(page.icon, 36)}</span>
-      <div>
-        <p class="eyebrow">${escapeHtml(item.category || "Uncategorized")}</p>
-        <h3>${escapeHtml(item.file_name)}</h3>
-        <p>${escapeHtml(item.description || CONFIG.defaultDescription)}</p>
-      </div>
-      ${favoriteButton("resource", item)}
-    </div>
-    <figure class="icon-detail-preview">
-      ${item.icon_url ? `<img src="${item.icon_url}" alt="${escapeHtml(item.file_name)} preview" />` : `<span>${icon(page.icon, 54)}No preview available</span>`}
-    </figure>
-    <div class="detail-meta">
-      <span>${icon("clock", 17)} Uploaded ${formatDate(item.created_at)}</span>
-      <span>${icon("file", 17)} ${fileSize(item.file_size) || "Unknown size"}</span>
-      <span>${icon("download", 17)} ${Number(item.download_count || 0).toLocaleString()} downloads</span>
-    </div>
-    <div class="modal-actions split">
-      ${downloadButton(item)}
-      <span></span>
-      ${
-        manage
-          ? `<button class="button secondary" type="button" data-action="edit-resource" data-route="${page.route}" data-id="${item.id}">${icon(
-              "edit",
-              18
-            )}Edit</button>
-            <button class="button danger" type="button" data-action="delete-resource" data-route="${page.route}" data-id="${item.id}">${icon(
-              "trash",
-              18
-            )}Delete</button>`
-          : ""
-      }
-    </div>
-  </div>`;
-  return modalFrame(`${page.shortTitle} Details`, body, "large");
-}
-
 function renderJavaUploadModal() {
   const existing = state.modal.id ? findJava(state.modal.id) : null;
-  const body = `<form class="modal-form" data-form="java-upload" data-id="${existing?.id || ""}">
-    <label class="field">
-      <span class="field-label">Code Name</span>
-      <input type="text" name="codeName" required maxlength="120" value="${escapeHtml(existing?.code_name || "")}" placeholder="RecyclerView adapter helper" />
-    </label>
-    <label class="field">
-      <span class="field-label">Java Source Code Editor</span>
-      <textarea class="code-editor" name="sourceCode" required rows="13" spellcheck="false" placeholder="public class MainActivity { ... }">${escapeHtml(
-        existing?.source_code || ""
-      )}</textarea>
-    </label>
-    <div class="two-column">${categoryDropdown("category", existing?.category || CONFIG.categories[0])}${sortingDropdown(
-      existing?.sort_key || "newest"
-    )}</div>
+  const body = `<form class="modal-form modal-form--stacked" data-form="java-upload" data-id="${existing?.id || ""}">
+    <div class="modal-scroll">
+      <label class="field">
+        <span class="field-label">${t("java.codeName")}</span>
+        <input type="text" name="codeName" required maxlength="120" value="${escapeHtml(existing?.code_name || "")}" placeholder="RecyclerView adapter helper" />
+      </label>
+      <label class="field">
+        <span class="field-label">${t("java.description")}</span>
+        <textarea name="description" rows="2" placeholder="${escapeHtml(t("java.descriptionPlaceholder"))}">${escapeHtml(existing?.description || "")}</textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">${t("java.source")}</span>
+        <textarea class="code-editor" name="sourceCode" required rows="10" spellcheck="false" placeholder="public class MainActivity { ... }">${escapeHtml(
+          existing?.source_code || ""
+        )}</textarea>
+      </label>
+      <div class="two-column">${categoryDropdown("category", existing?.category || CONFIG.categories[0])}${sortingDropdown(
+        existing?.sort_key || "newest"
+      )}</div>
+    </div>
     <div class="modal-actions">
-      <button class="button ghost" type="button" data-action="close-modal">Cancel</button>
-      <button class="button primary" type="submit">${icon("upload", 18)}${existing ? "Save Changes" : "Upload"}</button>
+      <button class="button ghost" type="button" data-action="close-modal">${t("common.cancel")}</button>
+      <button class="button primary" type="submit">${icon("upload", 18)}${existing ? t("common.save") : t("common.upload")}</button>
     </div>
   </form>`;
-  return modalFrame(existing ? "Edit Java Source Code" : "Upload Java Source Code", body, "large");
+  return modalFrame(existing ? t("java.editTitle") : t("java.uploadTitle"), body, "large");
 }
 
 function renderJavaDetailModal() {
   const item = findJava(state.modal.id);
   if (!item) return "";
   const manage = canManage(state.user, state.profile, item);
-  const body = `<div class="java-detail">
-    <div class="detail-hero">
-      <span class="file-thumb large">${icon("code", 34)}</span>
-      <div>
-        <p class="eyebrow">${escapeHtml(item.category || "Uncategorized")}</p>
-        <h3>${escapeHtml(item.code_name)}</h3>
-        <p>Uploaded ${formatDate(item.created_at)}</p>
+  const body = `<div class="java-detail modal-detail--stacked">
+    <div class="modal-scroll">
+      <div class="detail-hero">
+        <span class="file-thumb large">${icon("code", 34)}</span>
+        <div class="detail-hero-copy">
+          <p class="eyebrow">${escapeHtml(item.category || "Uncategorized")}</p>
+          <h3>${escapeHtml(item.code_name)}</h3>
+          ${item.description ? `<p class="java-description">${escapeHtml(item.description)}</p>` : ""}
+          <p class="muted">${t("java.uploaded")} ${formatDate(item.created_at)}</p>
+        </div>
+        ${favoriteButton("java", item)}
       </div>
-      ${favoriteButton("java", item)}
+      <pre class="code-block language-java"><code class="language-java">${highlightJava(item.source_code)}</code></pre>
     </div>
-    <pre class="code-block"><code>${highlightJava(item.source_code)}</code></pre>
     <div class="modal-actions split">
-      <button class="button primary" type="button" data-action="copy-java" data-id="${item.id}">${icon("copy", 18)}Copy</button>
+      <button class="button primary" type="button" data-action="copy-java" data-id="${item.id}">${icon("copy", 18)}${t("common.copy")}</button>
       <span></span>
       ${
         manage
           ? `<button class="button secondary" type="button" data-action="edit-java" data-id="${item.id}">${icon(
               "edit",
               18
-            )}Edit</button>
+            )}${t("common.edit")}</button>
             <button class="button danger" type="button" data-action="delete-java" data-id="${item.id}">${icon(
               "trash",
               18
-            )}Delete</button>`
+            )}${t("common.delete")}</button>`
           : ""
       }
     </div>
   </div>`;
-  return modalFrame("Java Source Details", body, "large");
+  return modalFrame(t("java.detailTitle"), body, "xlarge");
 }
 
 async function handleClick(event) {
@@ -1235,16 +1336,32 @@ async function handleClick(event) {
       state.authMode = actionEl.dataset.mode;
       render();
       break;
-    case "toggle-password":
-      togglePassword(actionEl);
-      break;
     case "oauth":
       await runAction(actionEl, () => signInWithProvider(actionEl.dataset.provider), "Redirecting...");
       break;
-    case "toggle-theme":
-      state.theme = state.theme === "dark" ? "light" : "dark";
-      localStorage.setItem("theme", state.theme);
+    case "set-theme":
+      setTheme(actionEl.dataset.theme);
+      break;
+    case "set-locale":
+      state.locale = actionEl.dataset.locale;
+      setLocale(actionEl.dataset.locale);
       render();
+      break;
+    case "toggle-password": {
+      const field = actionEl.closest(".field");
+      const input = field?.querySelector('input[type="password"], input[type="text"]');
+      if (!input) break;
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      actionEl.innerHTML = icon(show ? "eye-off" : "eye", 18);
+      actionEl.setAttribute("aria-label", show ? t("auth.hidePassword") : t("auth.showPassword"));
+      break;
+    }
+    case "cancel-upload":
+      cancelActiveUpload();
+      break;
+    case "retry-upload":
+      if (typeof state.upload.retry === "function") state.upload.retry();
       break;
     case "toggle-sidebar":
       state.sidebarCollapsed = !state.sidebarCollapsed;
@@ -1281,10 +1398,12 @@ async function handleClick(event) {
       render();
       break;
     case "view-mode":
-      state.viewMode[actionEl.dataset.route || "projects"] = actionEl.dataset.mode;
+      if (actionEl.dataset.route === "icons") state.viewMode.icons = actionEl.dataset.mode;
+      else state.viewMode.projects = actionEl.dataset.mode;
       render();
       break;
     case "open-upload":
+      resetUploadState();
       state.modal = { type: "resource-upload", route: actionEl.dataset.route };
       render();
       break;
@@ -1298,10 +1417,6 @@ async function handleClick(event) {
       break;
     case "open-project":
       state.modal = { type: "project-detail", id: actionEl.dataset.id };
-      render();
-      break;
-    case "open-resource-detail":
-      state.modal = { type: "resource-detail", route: actionEl.dataset.route, id: actionEl.dataset.id };
       render();
       break;
     case "open-java-detail":
@@ -1358,7 +1473,6 @@ async function handleSubmit(event) {
     case "signup":
       await runAction(submit, async () => {
         const data = new FormData(form);
-        if (data.get("password") !== data.get("confirmPassword")) throw new Error("Passwords do not match.");
         await signUpWithEmail(data.get("username"), data.get("email"), data.get("password"));
         const context = await getCurrentContext();
         state.session = context.session;
@@ -1379,7 +1493,6 @@ async function handleSubmit(event) {
       await runAction(submit, async () => {
         const data = new FormData(form);
         if (!data.get("password")) throw new Error("Enter your new password first.");
-        if (data.get("password") !== data.get("confirmPassword")) throw new Error("Passwords do not match.");
         await updatePassword(data.get("password"));
         toast("Password updated.", "success");
         state.authMode = "signin";
@@ -1497,23 +1610,6 @@ function bindTouchNavigation() {
   );
 }
 
-function togglePassword(button) {
-  const field = button.closest(".password-field");
-  const input = field?.querySelector("input");
-  if (!input) return;
-  const showPassword = input.type === "password";
-  const selectionStart = input.selectionStart;
-  const selectionEnd = input.selectionEnd;
-  input.type = showPassword ? "text" : "password";
-  button.setAttribute("aria-pressed", String(showPassword));
-  button.setAttribute("aria-label", `${showPassword ? "Hide" : "Show"} ${field.querySelector(".field-label")?.textContent || "password"}`);
-  button.innerHTML = icon(showPassword ? "eyeOff" : "eye", 18);
-  input.focus({ preventScroll: true });
-  if (selectionStart !== null && selectionEnd !== null) {
-    input.setSelectionRange(selectionStart, selectionEnd);
-  }
-}
-
 function toggleDropdown(button) {
   const field = button.closest("[data-dropdown]");
   const open = field.classList.contains("open");
@@ -1551,18 +1647,7 @@ function selectFilterOption(button) {
 function updateFileSummary(input) {
   const summary = input.closest(".dropzone")?.querySelector(`[data-file-summary="${input.name}"]`);
   if (!summary) return;
-  const file = input.files?.[0];
-  summary.textContent = file ? `${file.name || "Selected file"} ${fileSize(file.size)}` : "No file selected";
-}
-
-function extensionOf(file) {
-  return String(file?.name || "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || "";
-}
-
-function projectFileIsSupported(file) {
-  const extension = extensionOf(file);
-  const type = String(file?.type || "").toLowerCase();
-  return extension === "swb" || extension === "zip" || type.includes("zip") || (!extension && !type);
+  summary.textContent = input.files?.[0] ? `${input.files[0].name} ${fileSize(input.files[0].size)}` : "No file selected";
 }
 
 async function runAction(button, task, pendingText = "") {
@@ -1585,40 +1670,98 @@ async function runAction(button, task, pendingText = "") {
   }
 }
 
-async function handleResourceUpload(form, submit) {
-  await runAction(submit, async () => {
-    const route = form.dataset.route;
-    const page = resourcePages[route];
-    const existing = form.dataset.id ? findResource(route, form.dataset.id) : null;
-    const data = new FormData(form);
-    const mainFile = form.elements.mainFile.files[0];
-    const iconFile = form.elements.iconFile?.files?.[0];
-    const previewOne = form.elements.previewOne?.files?.[0];
-    const previewTwo = form.elements.previewTwo?.files?.[0];
+function resetUploadState() {
+  state.upload = { active: false, message: "", percent: 0, error: "", retry: null };
+  state.uploadAbort = null;
+}
 
-    if (!existing && !mainFile) throw new Error("Choose the main file before uploading.");
-    if (page.requiresProjectAssets) {
-      if (mainFile && !projectFileIsSupported(mainFile)) throw new Error("Project file must be .swb or .zip.");
-      if (!existing && (!iconFile || !previewOne || !previewTwo)) {
-        throw new Error("Project uploads require an icon and two preview images.");
+function cancelActiveUpload() {
+  if (state.uploadAbort) state.uploadAbort.abort();
+  resetUploadState();
+  render();
+  toast(t("upload.cancelled"), "info");
+}
+
+let uploadRenderTimer;
+function setUploadProgress(patch) {
+  state.upload = { ...state.upload, active: !patch.error, ...patch };
+  clearTimeout(uploadRenderTimer);
+  uploadRenderTimer = setTimeout(() => render(), patch.error || patch.percent === 100 ? 0 : 140);
+}
+
+async function performResourceUpload(form, existing) {
+  const route = form.dataset.route;
+  const page = resourcePages[route];
+  const data = new FormData(form);
+  const mainFile = form.elements.mainFile.files[0];
+  const iconFile = form.elements.iconFile?.files?.[0];
+  const previewOne = form.elements.previewOne?.files?.[0];
+  const previewTwo = form.elements.previewTwo?.files?.[0];
+
+  if (!existing && !mainFile) throw new Error("Choose the main file before uploading.");
+  if (page.requiresProjectAssets) {
+    if (mainFile && !/\.(swb|zip)$/i.test(mainFile.name)) throw new Error("Project file must be .swb or .zip.");
+    if (!existing && (!iconFile || !previewOne || !previewTwo)) {
+      throw new Error("Project uploads require an icon and two preview images.");
+    }
+  }
+  if (page.route === "icons" && mainFile && !/\.(png|jpe?g|webp|svg|zip)$/i.test(mainFile.name)) {
+    console.warn("[SketchVault Upload] icon extension warning", mainFile.name);
+  }
+
+  const controller = new AbortController();
+  state.uploadAbort = controller;
+
+  await saveResource(
+    page.type,
+    {
+      fileName: data.get("fileName"),
+      description: page.route === "icons" ? "" : data.get("description"),
+      category: data.get("category"),
+      sortKey: data.get("sortKey")
+    },
+    { mainFile, iconFile, previewOne, previewTwo },
+    existing,
+    {
+      signal: controller.signal,
+      onProgress: ({ message, percent }) => {
+        setUploadProgress({ active: true, message, percent, error: "" });
       }
     }
+  );
+}
 
-    await saveResource(
-      page.type,
-      {
-        fileName: data.get("fileName"),
-        description: data.get("description"),
-        category: data.get("category"),
-        sortKey: data.get("sortKey")
-      },
-      { mainFile, iconFile, previewOne, previewTwo },
-      existing
-    );
-    state.modal = null;
-    toast(existing ? "Resource updated." : "Resource uploaded.", "success");
-    await reloadAfterMutation(route);
-  }, "Uploading...");
+async function handleResourceUpload(form, submit) {
+  const existing = form.dataset.id ? findResource(form.dataset.route, form.dataset.id) : null;
+  const run = async () => {
+    resetUploadState();
+    setUploadProgress({ active: true, message: t("upload.preparing"), percent: 0, error: "" });
+    try {
+      await performResourceUpload(form, existing);
+      resetUploadState();
+      state.modal = null;
+      toast(existing ? "Resource updated." : t("upload.complete"), "success");
+      await reloadAfterMutation(form.dataset.route);
+    } catch (error) {
+      const message = readableError(error);
+      setUploadProgress({ active: false, message: t("upload.failed"), percent: 0, error: message });
+      state.upload.retry = () => handleResourceUpload(form, submit);
+      throw error;
+    }
+  };
+
+  if (submit) {
+    submit.disabled = true;
+    try {
+      await run();
+    } catch {
+      /* upload status ဖြင့် ပြထားပြီး */
+    } finally {
+      submit.disabled = false;
+    }
+  } else {
+    await run();
+  }
 }
 
 async function handleJavaUpload(form, submit) {
@@ -1628,6 +1771,7 @@ async function handleJavaUpload(form, submit) {
     await saveJavaCode(
       {
         codeName: data.get("codeName"),
+        description: data.get("description"),
         sourceCode: data.get("sourceCode"),
         category: data.get("category"),
         sortKey: data.get("sortKey")

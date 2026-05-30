@@ -36,12 +36,15 @@ create table if not exists public.java_codes (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid not null references public.profiles(id) on delete cascade,
   code_name text not null,
+  description text,
   source_code text not null,
   category text not null default 'Utilities',
   sort_key text not null default 'newest',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.java_codes add column if not exists description text;
 
 create index if not exists java_codes_created_idx
   on public.java_codes(created_at desc);
