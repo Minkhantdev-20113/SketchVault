@@ -238,12 +238,12 @@ export function uploadStatusMarkup(upload) {
   if (!upload?.active && !upload?.error) return "";
   const percent = upload.percent ?? 0;
   const statusClass = upload.error ? "is-error" : upload.percent === 100 ? "is-success" : "";
-  return `<div class="upload-status ${statusClass}" role="status" aria-live="polite">
+  return `<div class="upload-status ${statusClass}" data-upload-progress role="status" aria-live="polite">
     <div class="upload-status-head">
-      <strong>${escapeHtml(upload.message || t("upload.preparing"))}</strong>
-      <span>${upload.error ? "" : `${percent}%`}</span>
+      <strong data-upload-message>${escapeHtml(upload.message || t("upload.preparing"))}</strong>
+      <span data-upload-percent>${upload.error ? "" : `${percent}%`}</span>
     </div>
-    <div class="progress-track" aria-hidden="true"><span style="width:${percent}%"></span></div>
+    <div class="progress-track" aria-hidden="true"><span data-upload-fill style="width:${percent}%"></span></div>
     ${
       upload.error
         ? `<p class="upload-error">${escapeHtml(upload.error)}</p>

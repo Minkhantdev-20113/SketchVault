@@ -855,8 +855,14 @@ code {
   display: none;
 }
 
-.topbar-signout-btn .topbar-signout-label {
-  display: none;
+.signout-nav {
+  color: var(--danger);
+}
+
+.signout-nav:hover,
+.signout-nav:focus-visible {
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  color: var(--danger);
 }
 
 .page-view {
@@ -1827,10 +1833,6 @@ code {
   .topbar-user,
   .collapse-toggle {
     display: inline-flex;
-  }
-
-  .topbar-signout-btn .topbar-signout-label {
-    display: inline;
   }
 
   .topbar-user {

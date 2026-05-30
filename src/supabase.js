@@ -156,6 +156,23 @@ async function syncClientSession(client, session) {
   }
 }
 
+function prepareUploadAuthFast(options = {}) {
+  const { session, user, onProgress } = options;
+  const auth = buildAuthContext(session, user);
+  if (!auth) throw new Error("Please sign in again. Your session was not found.");
+  onProgress?.({ message: "Session ready", percent: 10 });
+  logUpload("session:fast", { userId: auth.userId });
+  return auth;
+}
+
+async function resolveUploadAuth(client, options = {}) {
+  const { session, user } = options;
+  if (session?.access_token && user?.id && !sessionExpiresSoon(session)) {
+    return prepareUploadAuthFast(options);
+  }
+  return prepareUploadAuth(client, options);
+}
+
 async function prepareUploadAuth(client, options = {}) {
   const { session, user, onProgress } = options;
   onProgress?.({ message: "Checking session...", percent: 5 });
@@ -257,6 +274,35 @@ async function currentUser(client) {
   return data.session.user;
 }
 
+function preferFetchStorageUpload() {
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
+}
+
+async function fetchStorageUpload({ url, token, apiKey, file, signal }) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      apikey: apiKey,
+      "x-upsert": "false",
+      "Content-Type": file.type || "application/octet-stream"
+    },
+    body: file,
+    signal
+  });
+  if (!response.ok) {
+    let message = `Storage upload failed (HTTP ${response.status})`;
+    try {
+      const body = await response.json();
+      if (body.message || body.error) message = body.message || body.error;
+    } catch {
+      const text = await response.text();
+      if (text) message = text.slice(0, 200);
+    }
+    throw new Error(message);
+  }
+}
+
 function xhrStorageUpload({ url, token, apiKey, file, onProgress, signal }) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -264,7 +310,6 @@ function xhrStorageUpload({ url, token, apiKey, file, onProgress, signal }) {
     xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     xhr.setRequestHeader("apikey", apiKey);
     xhr.setRequestHeader("x-upsert", "false");
-    xhr.setRequestHeader("Cache-Control", "31536000");
     xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
 
     const abort = () => {
@@ -277,8 +322,11 @@ function xhrStorageUpload({ url, token, apiKey, file, onProgress, signal }) {
     }
 
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && typeof onProgress === "function") {
+      if (typeof onProgress !== "function") return;
+      if (event.lengthComputable && event.total > 0) {
         onProgress(Math.round((event.loaded / event.total) * 100));
+      } else if (event.loaded > 0) {
+        onProgress(Math.min(95, 20 + Math.round(event.loaded / 1024 / 50)));
       }
     };
 
@@ -321,24 +369,48 @@ async function uploadStorageFile(bucket, userId, resourceType, file, auth, onPro
   onProgress?.({ message: "Uploading to storage...", percent: 20 });
 
   const url = `${CONFIG.supabaseUrl}/storage/v1/object/${bucket}/${encodeStoragePath(path)}`;
-  logUpload("storage:xhr", { url, size: file.size });
+  const useFetch = preferFetchStorageUpload();
+  logUpload(useFetch ? "storage:fetch" : "storage:xhr", { url, size: file.size });
 
-  await withTimeout(
-    xhrStorageUpload({
-      url,
-      token: auth.accessToken,
-      apiKey: CONFIG.supabaseAnonKey,
-      file,
-      signal,
-      onProgress: (pct) =>
-        onProgress?.({
-          message: `Uploading: ${pct}%`,
-          percent: 20 + Math.round(pct * 0.55)
-        })
-    }),
-    90_000,
-    "Storage upload"
-  );
+  let tickTimer;
+  const mapPct = (pct) =>
+    onProgress?.({
+      message: useFetch ? "Uploading to storage..." : `Uploading: ${pct}%`,
+      percent: 20 + Math.round(pct * 0.55)
+    });
+
+  if (useFetch) {
+    let fake = 22;
+    tickTimer = setInterval(() => {
+      fake = Math.min(76, fake + 3);
+      mapPct(Math.round(((fake - 22) / 54) * 100));
+    }, 700);
+  }
+
+  try {
+    await withTimeout(
+      useFetch
+        ? fetchStorageUpload({
+            url,
+            token: auth.accessToken,
+            apiKey: CONFIG.supabaseAnonKey,
+            file,
+            signal
+          })
+        : xhrStorageUpload({
+            url,
+            token: auth.accessToken,
+            apiKey: CONFIG.supabaseAnonKey,
+            file,
+            signal,
+            onProgress: mapPct
+          }),
+      UPLOAD_TIMEOUT_MS,
+      "Storage upload"
+    );
+  } finally {
+    clearInterval(tickTimer);
+  }
 
   logUpload("storage:success", { bucket, path });
   onProgress?.({ message: "Storage upload complete", percent: 82 });
@@ -552,18 +624,26 @@ async function createSignedUrlRest(bucket, path, token, expiresIn = 3600) {
 }
 
 async function enrichResourceItem(item, favorites, token) {
-  let icon_url = "";
+  const jobs = [];
   if (item.resource_type === "icon" && item.file_path) {
-    icon_url = await createSignedUrlRest(RESOURCE_BUCKET, item.file_path, token);
+    jobs.push(createSignedUrlRest(RESOURCE_BUCKET, item.file_path, token));
   } else if (item.icon_path) {
-    icon_url = await createSignedUrlRest(ICON_BUCKET, item.icon_path, token);
+    jobs.push(createSignedUrlRest(ICON_BUCKET, item.icon_path, token));
+  } else {
+    jobs.push(Promise.resolve(""));
   }
+  jobs.push(
+    item.preview_one_path ? createSignedUrlRest(PREVIEW_BUCKET, item.preview_one_path, token) : Promise.resolve(""),
+    item.preview_two_path ? createSignedUrlRest(PREVIEW_BUCKET, item.preview_two_path, token) : Promise.resolve("")
+  );
+
+  const [icon_url, preview_one_url, preview_two_url] = await Promise.all(jobs);
   return {
     ...item,
     is_favorite: favorites.has(item.id),
     icon_url,
-    preview_one_url: "",
-    preview_two_url: ""
+    preview_one_url,
+    preview_two_url
   };
 }
 
@@ -624,7 +704,7 @@ export async function saveResource(resourceType, values, files, existing = null,
   onProgress?.({ message: "Starting upload...", percent: 0 });
 
   const client = await getSupabase();
-  const auth = await prepareUploadAuth(client, { session, user, onProgress });
+  const auth = await resolveUploadAuth(client, { session, user, onProgress });
   const payload = {
     resource_type: resourceType,
     file_name: values.fileName.trim(),
@@ -757,7 +837,7 @@ async function saveJavaCodeRow(auth, payload, existing, options) {
 
 export async function saveJavaCode(values, existing = null, options = {}) {
   const client = await getSupabase();
-  const auth = await prepareUploadAuth(client, options);
+  const auth = await resolveUploadAuth(client, options);
   const payload = {
     code_name: values.codeName.trim(),
     source_code: values.sourceCode.trim(),

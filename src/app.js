@@ -278,15 +278,16 @@ async function handleRouteChange() {
   await loadRouteData();
 }
 
-async function loadRouteData(force = false) {
+async function loadRouteData(force = false, options = {}) {
   if (!configured() || !isSignedIn() || state.route === "auth" || state.route === "landing" || state.route === "appearance") {
     return;
   }
 
-  const route = state.route;
+  const route = options.route || state.route;
   if (!force && state.data[route]) return;
 
-  const showSkeleton = state.data[route] === null;
+  const silent = Boolean(options.silent);
+  const showSkeleton = !silent && state.data[route] === null;
   if (showSkeleton) {
     state.dataLoading = true;
     render();
@@ -314,9 +315,9 @@ async function refreshRoute(route = state.route) {
 }
 
 async function reloadAfterMutation(primaryRoute) {
-  if (primaryRoute) state.data[primaryRoute] = null;
   state.data.dashboard = null;
-  await loadRouteData(true);
+  const route = primaryRoute || state.route;
+  await loadRouteData(true, { silent: true, route });
 }
 
 function renderLanding() {
@@ -575,6 +576,10 @@ function renderSidebar() {
     </nav>
     <div class="sidebar-footer">
       <div class="sidebar-theme">${themeToggleHtml()}</div>
+      <button class="nav-item signout-nav" type="button" data-action="signout">
+        ${icon("logout", 20)}
+        <span>${t("common.signOut")}</span>
+      </button>
       <div class="profile-chip">
         <span class="avatar">${initials(username())}</span>
         <span class="profile-copy">
@@ -607,10 +612,6 @@ function renderTopbar() {
         <span class="avatar">${initials(username())}</span>
         <span>${escapeHtml(username())}</span>
       </div>
-      <button class="button ghost compact topbar-signout-btn" type="button" data-action="signout" title="${t("common.signOut")}" aria-label="${t("common.signOut")}">
-        ${icon("logout", 18)}
-        <span class="topbar-signout-label">${t("common.signOut")}</span>
-      </button>
     </div>
   </header>`;
 }
@@ -1695,7 +1696,36 @@ let uploadRenderTimer;
 function setUploadProgress(patch) {
   state.upload = { ...state.upload, active: !patch.error, ...patch };
   clearTimeout(uploadRenderTimer);
-  uploadRenderTimer = setTimeout(() => render(), patch.error || patch.percent === 100 ? 0 : 140);
+  uploadRenderTimer = setTimeout(() => updateUploadProgressUi(), patch.error || patch.percent === 100 ? 0 : 180);
+}
+
+function updateUploadProgressUi() {
+  const bar = document.querySelector("[data-upload-progress]");
+  if (!bar) {
+    render();
+    return;
+  }
+  const message = bar.querySelector("[data-upload-message]");
+  const fill = bar.querySelector("[data-upload-fill]");
+  const percent = bar.querySelector("[data-upload-percent]");
+  if (message) message.textContent = state.upload.message || "";
+  if (fill) fill.style.width = `${state.upload.percent || 0}%`;
+  if (percent) percent.textContent = `${state.upload.percent || 0}%`;
+}
+
+async function patchResourceList(route, saved) {
+  if (!saved?.id || !resourcePages[route]) return;
+  const authOpts = { session: state.session, user: state.user };
+  try {
+    const fresh = await listResources(resourcePages[route].type, authOpts);
+    const item = fresh.find((row) => row.id === saved.id);
+    if (!item) return;
+    const list = state.data[route] || [];
+    state.data[route] = [item, ...list.filter((row) => row.id !== saved.id)];
+    if (state.route === route) render();
+  } catch {
+    /* silent refresh will reconcile */
+  }
 }
 
 async function performResourceUpload(form, existing) {
@@ -1725,7 +1755,7 @@ async function performResourceUpload(form, existing) {
   const controller = new AbortController();
   state.uploadAbort = controller;
 
-  await saveResource(
+  return saveResource(
     page.type,
     {
       fileName: data.get("fileName"),
@@ -1752,11 +1782,12 @@ async function handleResourceUpload(form, submit) {
     resetUploadState();
     setUploadProgress({ active: true, message: t("upload.preparing"), percent: 0, error: "" });
     try {
-      await performResourceUpload(form, existing);
+      const saved = await performResourceUpload(form, existing);
       resetUploadState();
       state.modal = null;
       toast(existing ? "Resource updated." : t("upload.complete"), "success");
-      await reloadAfterMutation(form.dataset.route);
+      patchResourceList(form.dataset.route, saved);
+      reloadAfterMutation(form.dataset.route);
     } catch (error) {
       const message = readableError(error);
       setUploadProgress({ active: false, message: t("upload.failed"), percent: 0, error: message });
@@ -1799,7 +1830,7 @@ async function handleJavaUpload(form, submit) {
     );
     state.modal = null;
     toast(existing ? "Java source updated." : "Java source uploaded.", "success");
-    await reloadAfterMutation("java");
+    reloadAfterMutation("java");
   });
 }
 
