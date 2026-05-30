@@ -1,0 +1,229 @@
+GitHub Pages ဖြင့် Web App Host လုပ်နည်း
+========================================
+
+ဒီ project က static frontend web app ဖြစ်ပါတယ်။
+ဒါကြောင့် GitHub Pages နဲ့ free host လုပ်လို့ရပါတယ်။
+
+မှတ်ချက်:
+- GitHub Pages က frontend files တွေကိုပဲ host လုပ်ပေးပါတယ်။
+- Login, Database, Storage, Upload, Download တွေကို Supabase က handle လုပ်ပေးပါမယ်။
+- server.mjs က local computer မှာ test ဖို့အတွက်ပဲ ဖြစ်ပါတယ်။ GitHub Pages မှာ server.mjs run မလုပ်ပါ။
+
+
+အဆင့် ၁ - GitHub Repository အသစ်ဖန်တီးပါ
+----------------------------------------
+
+1. GitHub ကို login ဝင်ပါ။
+2. New Repository နှိပ်ပါ။
+3. Repository name ကို ဥပမာ ဒီလိုပေးပါ။
+
+   sketchware-pro-hub
+
+4. Public သို့မဟုတ် Private ကို ရွေးနိုင်ပါတယ်။
+5. Create repository နှိပ်ပါ။
+
+
+အဆင့် ၂ - Supabase Config ထည့်ပါ
+--------------------------------
+
+Project folder ထဲက ဒီ file ကိုဖွင့်ပါ။
+
+src/config.js
+
+ဒီနေရာတွေကို သင့် Supabase project information နဲ့ အစားထိုးပါ။
+
+supabaseUrl: "https://YOUR-PROJECT.supabase.co",
+supabaseAnonKey: "YOUR_SUPABASE_ANON_KEY",
+
+ဥပမာ:
+
+supabaseUrl: "https://abcdxyz.supabase.co",
+supabaseAnonKey: "your-real-anon-key-here",
+
+Supabase URL နဲ့ anon key ကို Supabase Dashboard ထဲက
+Project Settings > API
+မှာ ရနိုင်ပါတယ်။
+
+
+အဆင့် ၃ - Git မရှိသေးရင် Install လုပ်ပါ
+---------------------------------------
+
+သင့် computer မှာ git command မရသေးရင် Git ကို install လုပ်ပါ။
+
+Download:
+https://git-scm.com/downloads
+
+Install ပြီးရင် PowerShell သို့မဟုတ် Terminal ကို ပြန်ဖွင့်ပါ။
+
+
+အဆင့် ၄ - Project ကို GitHub ပေါ် Push လုပ်ပါ
+--------------------------------------------
+
+PowerShell ကိုဖွင့်ပြီး ဒီ commands တွေ run ပါ။
+
+cd "C:\Users\Min Khant\Documents\project store webapp"
+
+git init
+git branch -M main
+git add .
+git commit -m "Initial Sketchware Pro Hub"
+
+git remote add origin https://github.com/YOUR_USERNAME/sketchware-pro-hub.git
+git push -u origin main
+
+အရေးကြီး:
+- YOUR_USERNAME နေရာမှာ သင့် GitHub username ထည့်ပါ။
+- sketchware-pro-hub နေရာမှာ သင်ဖန်တီးထားတဲ့ repository name ထည့်ပါ။
+
+ဥပမာ:
+
+git remote add origin https://github.com/minkhant/sketchware-pro-hub.git
+
+
+အဆင့် ၅ - GitHub Pages Enable လုပ်ပါ
+------------------------------------
+
+GitHub repository ထဲဝင်ပါ။
+
+ပြီးရင်:
+
+Settings > Pages
+
+ကိုသွားပါ။
+
+Build and deployment section ထဲမှာ:
+
+Source: Deploy from a branch
+Branch: main
+Folder: / (root)
+
+ရွေးပြီး Save နှိပ်ပါ။
+
+ခဏစောင့်ပြီးရင် GitHub Pages URL ထွက်လာပါမယ်။
+
+ဥပမာ:
+
+https://YOUR_USERNAME.github.io/sketchware-pro-hub/
+
+
+အဆင့် ၆ - Supabase Auth Redirect URL ပြင်ပါ
+------------------------------------------
+
+GitHub Pages URL ရပြီးနောက် Supabase Dashboard ကိုဖွင့်ပါ။
+
+Authentication > URL Configuration
+
+ထဲသွားပါ။
+
+Site URL ကို ဒီလိုထည့်ပါ။
+
+https://YOUR_USERNAME.github.io/sketchware-pro-hub/
+
+Redirect URLs ထဲမှာလည်း ဒီ URL ကို ထည့်ပါ။
+
+https://YOUR_USERNAME.github.io/sketchware-pro-hub/
+
+Google Login / GitHub Login သုံးမယ်ဆိုရင် OAuth provider settings မှာလည်း redirect URL များကို မှန်အောင်ထည့်ထားရပါမယ်။
+
+
+အဆင့် ၇ - Supabase Database Schema Run ပါ
+-----------------------------------------
+
+Project folder ထဲမှာ ဒီ file ရှိပါတယ်။
+
+supabase/schema.sql
+
+Supabase Dashboard ထဲမှာ:
+
+SQL Editor
+
+ကိုဖွင့်ပါ။
+
+ပြီးရင် supabase/schema.sql ထဲက SQL code အကုန် copy လုပ်ပြီး Run နှိပ်ပါ။
+
+ဒီ SQL file က:
+- profiles table
+- resource_items table
+- java_codes table
+- favorites table
+- storage buckets
+- RLS security policies
+- admin/owner permissions
+
+တွေကို ဖန်တီးပေးပါမယ်။
+
+
+အဆင့် ၈ - Email Login Confirmation ပိတ်ချင်ရင်
+---------------------------------------------
+
+Supabase Dashboard ထဲမှာ:
+
+Authentication > Providers > Email
+
+ကိုသွားပါ။
+
+Confirm email ကို Off လုပ်ပါ။
+
+ဒါဆို Sign Up လုပ်ပြီး email confirmation မလိုဘဲ login ဝင်နိုင်ပါမယ်။
+
+
+အဆင့် ၉ - Google Login / GitHub Login Setup
+-------------------------------------------
+
+Supabase Dashboard ထဲမှာ:
+
+Authentication > Providers
+
+ကိုသွားပါ။
+
+Google ကို Enable လုပ်ပါ။
+ပြီးရင် Google OAuth Client ID နဲ့ Client Secret ထည့်ပါ။
+
+GitHub ကို Enable လုပ်ပါ။
+ပြီးရင် GitHub OAuth Client ID နဲ့ Client Secret ထည့်ပါ။
+
+OAuth callback URL ကို Supabase ကပေးတဲ့ URL အတိုင်း Google/GitHub developer console ထဲမှာ ထည့်ပေးရပါမယ်။
+
+
+အဆင့် ၁၀ - Changes ပြင်ပြီးတိုင်း GitHub ပေါ်ပြန်တင်နည်း
+-------------------------------------------------------
+
+Project file တွေပြင်ပြီးတိုင်း ဒီ commands run ပါ။
+
+git add .
+git commit -m "Update web app"
+git push
+
+GitHub Pages က auto deploy လုပ်ပေးပါမယ်။
+
+
+အရေးကြီးတဲ့ URL များ
+--------------------
+
+Local test URL:
+
+http://localhost:4173
+
+GitHub Pages URL example:
+
+https://YOUR_USERNAME.github.io/sketchware-pro-hub/
+
+Supabase Dashboard:
+
+https://supabase.com/dashboard
+
+GitHub:
+
+https://github.com
+
+
+အတိုချုပ်
+---------
+
+1. GitHub repo အသစ်လုပ်ပါ။
+2. src/config.js ထဲ Supabase URL နဲ့ anon key ထည့်ပါ။
+3. git init, commit, push လုပ်ပါ။
+4. GitHub Settings > Pages မှာ main branch / root folder ရွေးပါ။
+5. GitHub Pages URL ကို Supabase Site URL နဲ့ Redirect URLs ထဲထည့်ပါ။
+6. supabase/schema.sql ကို Supabase SQL Editor မှာ run ပါ။
+7. App ကို GitHub Pages URL ကနေ အသုံးပြုနိုင်ပါပြီ။
